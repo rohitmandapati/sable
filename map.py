@@ -3,6 +3,8 @@ import numpy as np
 
 class Map:
     
+    min_free_fraction = 0.3
+    
     def __init__(self, width, height, seed_generator: np.uint8=None, obstacle_density=None):
         self.width = width
         self.height = height
@@ -13,15 +15,24 @@ class Map:
             self.generate_random_map(obstacle_density)
         else:
             self.generate_random_map()
+        free_fraction = np.mean(self.grid == 0)
+        while free_fraction < self.min_free_fraction:
+            seed_generator += 1
+            self.rng = np.random.default_rng(seed=seed_generator)
+            self.generate_random_map(obstacle_density)
+            free_fraction = np.mean(self.grid == 0)
+        self.free_cells = np.argwhere(self.grid == 0)
+
+            
     
     def generate_random_map(self, obstacle_density=0.5):
-        """
-        Generate a random map with obstacles represented as 1s and vacancies as 0s
-        """
+        # Generate a random map with obstacles represented as 1s and vacancies as 0s, flood fills all small disconnects
         if not (0 <= obstacle_density <= 1):
             raise ValueError("Obstacle density must be between 0 and 1.")
         self.grid = (self.rng.random((self.height, self.width)) < obstacle_density).astype(int)
         self.largest_connected_component()
+        
+        
         
     
     def largest_connected_component(self):
@@ -67,8 +78,8 @@ class Map:
 
     
     
-    
-    
+    # Recursive flood fill implementation, outdated but kept for reference
+    """
     def _flood_fill_helper_rec(self, x: int, y: int):
         if x < 0 or x >= self.height or y < 0 or y >= self.width:
             return
@@ -82,12 +93,11 @@ class Map:
         self._flood_fill_helper(x - 1, y)  # Left
         self._flood_fill_helper(x, y + 1)  # Up
         self._flood_fill_helper(x, y - 1)  # Down
-
     def flood_fill_rec(self, x: int, y: int):
-        """
-        Perform flood fill to find all connected spaces and set as 2
-        If (x,y) is an obstacle, raise exception
-        """
+        # 
+        # Perform flood fill to find all connected spaces and set as 2
+        # If (x,y) is an obstacle, raise exception
+        # 
         if self.grid[x,y] == 1:
             raise ValueError("Starting point is an obstacle.")
-        self._flood_fill_helper(x, y)
+        self._flood_fill_helper(x, y)"""
