@@ -2,7 +2,7 @@ from collections.abc import Callable
 
 from robot import Robot, Position
 from map import Map
-
+import numpy as np
 from actions import Action
 
 from policy import POLICIES
@@ -48,7 +48,7 @@ class Environment:
         if not robot.alive:
             raise RuntimeError("Inactive robot cannot determine next move")
 
-        dr, dc = move_func(robot, self.map.rng, *args, **kwargs)
+        dr, dc = move_func(robot, np.random.Generator(np.random.PCG64()), *args, **kwargs)
         r, c = robot.position
         next_position = (r + dr, c + dc)
 
