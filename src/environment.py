@@ -5,6 +5,8 @@ from src.map import Map
 
 from src.actions import Action
 
+from src.policy import POLICIES
+
 class Environment:
     def __init__(self, map: Map, robots: list[Robot]):
         self.map = map
@@ -26,8 +28,18 @@ class Environment:
         for robot in self.robots:
             if not robot.alive:
                 continue
-            move_func = getattr(robot, policy)
+            move_func = POLICIES[policy]
             robot.set_position(self.determine_next_move(robot, move_func, *args, **kwargs))
+            self.observe(robot)
+
+
+    def observe(self, robot: Robot) -> None:
+        # Reveal the ground-truth value of the robot's cell and its orthogonal neighbors
+        row, col = robot.position
+        for dr, dc in ((0, 0), (-1, 0), (1, 0), (0, -1), (0, 1)):
+            r, c = row + dr, col + dc
+            if 0 <= r < self.map.height and 0 <= c < self.map.width:
+                robot.reveal_cell((r, c), int(self.map.grid[r, c]))
 
     def determine_next_move(
         self, robot: Robot, move_func: Callable[..., Action], *args, **kwargs
@@ -35,7 +47,7 @@ class Environment:
         if not robot.alive:
             raise RuntimeError("Inactive robot cannot determine next move")
 
-        dr, dc = move_func(*args, **kwargs)
+        dr, dc = move_func(robot, self.map.rng, *args, **kwargs)
         r, c = robot.position
         next_position = (r + dr, c + dc)
 
