@@ -1,8 +1,9 @@
 from dataclasses import *
 from collections.abc import Callable
+from src.actions import Action
 
 import numpy as np
-from map import Map
+from src.map import Map
 
 UNKNOWN = -1
 KNOWN_FREE = 0
@@ -57,31 +58,3 @@ class Robot:
             self.belief_map[row][col] = value
         else: return # already seen, ignore
             
-    
-    # Magic Movement Functions
-    
-    def move_random(self, rng: np.random.Generator) -> Position:
-        # Random movement/no movement
-        if not self.alive:
-            raise RuntimeError("Inactive robot cannot move")
-        row, col = self.pos
-        possible_moves = [
-            [row, col], # Stay in place
-            (row - 1, col), # Up
-            (row + 1, col), # Down
-            (row, col - 1), # Left
-            (row, col + 1), # Right
-        ]
-        valid_moves = [
-            move for move in possible_moves
-            if 0 <= move[0] < self.map_shape[0] and 0 <= move[1] < self.map_shape[1] and self.belief_map[move[0], move[1]] != KNOWN_WALL
-        ]
-        if not valid_moves:
-            return self.pos  # No valid moves, stay in place
-        return valid_moves[rng.choice(len(valid_moves))]
-        
-    
-
-    
-
-

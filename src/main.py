@@ -1,6 +1,6 @@
-from map import Map
-from display import Display
-from robot import Robot
+from src.map import Map
+from src.display import Display
+from src.robot import Robot
 import numpy as np
 
 def tick():

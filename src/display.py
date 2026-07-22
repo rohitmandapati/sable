@@ -1,6 +1,6 @@
 import pygame
 
-from map import Map
+from src.map import Map
 
 
 class Display:
