@@ -1,3 +1,5 @@
 .venv
 /__pycache__/
 .claude
+renderer.py
+# renderer.py is WIP, not ready yet.

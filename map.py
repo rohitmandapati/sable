@@ -1,26 +1,35 @@
+from dataclasses import dataclass, field
 from typing import List
 import numpy as np
 
+@dataclass
 class Map:
-    
-    min_free_fraction = 0.3
-    
-    def __init__(self, width, height, seed_generator: np.uint8=None, obstacle_density=None):
-        self.width = width
-        self.height = height
-        self.grid = np.zeros((height, width), dtype=int)
-        self.rng = np.random.default_rng(seed=seed_generator)
-        self.vacancies = 0
-        if obstacle_density is not None:
-            self.generate_random_map(obstacle_density)
+    width: int
+    height: int
+    seed: int | None = None
+    obstacle_density: float = 0.5
+    min_free_fraction: float = 0.3
+    max_generation_attempts: int = 100
+
+    grid: np.ndarray = field(init=False, repr=False)
+    rng: np.random.Generator = field(init=False, repr=False)
+    vacancies: int = field(init=False)
+    free_cells: np.ndarray = field(init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        self.grid = np.zeros((self.height, self.width), dtype=int)
+        self.rng = np.random.default_rng(seed=self.seed)
+        if self.obstacle_density is not None:
+            self.generate_random_map(self.obstacle_density)
         else:
             self.generate_random_map()
         free_fraction = np.mean(self.grid == 0)
-        while free_fraction < self.min_free_fraction:
-            seed_generator += 1
-            self.rng = np.random.default_rng(seed=seed_generator)
-            self.generate_random_map(obstacle_density)
+        while free_fraction < self.min_free_fraction and self.max_generation_attempts > 0:
+            self.seed += 1
+            self.rng = np.random.default_rng(seed=self.seed)
+            self.generate_random_map(self.obstacle_density)
             free_fraction = np.mean(self.grid == 0)
+            self.max_generation_attempts -= 1
         self.free_cells = np.argwhere(self.grid == 0)
 
             
@@ -30,6 +39,10 @@ class Map:
         if not (0 <= obstacle_density <= 1):
             raise ValueError("Obstacle density must be between 0 and 1.")
         self.grid = (self.rng.random((self.height, self.width)) < obstacle_density).astype(int)
+        self.grid[0, :] = 1
+        self.grid[-1, :] = 1
+        self.grid[:, 0] = 1
+        self.grid[:, -1] = 1
         self.largest_connected_component()
         
         
@@ -75,6 +88,7 @@ class Map:
             stack.append((cx, cy + 1))
             stack.append((cx, cy - 1))
         return connected, out, cells
+
 
     
     
