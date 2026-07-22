@@ -1,17 +1,24 @@
-from src.map import Map
-from src.display import Display
-from src.robot import Robot
-import numpy as np
-
-def tick():
-    # Placeholder for tick logic
-    pass
-
+from map import Map
+from robot import Robot, KNOWN_FREE
+from environment import Environment
+from renderer import Renderer
 
 if __name__ == "__main__":
-    map = Map(width=10, height=10, seed=42, obstacle_density=0.2)
-    rob = Robot(robot_id="robert", pos=(tuple(map.free_cells[np.random.choice(len(map.free_cells))])), map_shape=(map.height, map.width))
+    world = Map(width=20, height=15, seed=42, obstacle_density=0.2)
+    start = tuple(world.free_cells[world.rng.choice(len(world.free_cells))])
+    rob = Robot(robot_id="robert", pos=start, map_shape=(world.height, world.width))
 
-    display = Display(title="Sable", cell_size=60, fps=10)
+    env = Environment(map=world, robots=[rob])
+    renderer = Renderer(world, cell_size=60, fps=10)
 
-    
+    env.observe(rob) # sense at spawn so the first move respects walls
+    total_free = len(world.free_cells)
+    explored = lambda: all(rob.belief_map[r, c] == KNOWN_FREE for r, c in world.free_cells)
+
+    while not explored():
+        env.update_robot_positions(policy="move_toward_unknown_bfs")
+        env.tick_count += 1
+        renderer.render([rob])
+
+    print(f"Explored all {total_free} free cells in {env.tick_count} ticks")
+    renderer.close()

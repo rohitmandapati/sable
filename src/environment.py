@@ -1,11 +1,11 @@
 from collections.abc import Callable
 
-from src.robot import Robot, Position
-from src.map import Map
+from robot import Robot, Position
+from map import Map
 
-from src.actions import Action
+from actions import Action
 
-from src.policy import POLICIES
+from policy import POLICIES
 
 class Environment:
     def __init__(self, map: Map, robots: list[Robot]):
@@ -29,8 +29,9 @@ class Environment:
             if not robot.alive:
                 continue
             move_func = POLICIES[policy]
-            robot.set_position(self.determine_next_move(robot, move_func, *args, **kwargs))
             self.observe(robot)
+
+            robot.set_position(self.determine_next_move(robot, move_func, *args, **kwargs))
 
 
     def observe(self, robot: Robot) -> None:

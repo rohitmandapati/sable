@@ -1,8 +1,8 @@
 
 
-from src.actions import Action
+from actions import Action
 import numpy as np
-from src.robot import KNOWN_WALL, Robot
+from robot import KNOWN_WALL, Robot
 
 def move_random(robot: Robot, rng: np.random.Generator) -> Action:
         # Random movement/no movement

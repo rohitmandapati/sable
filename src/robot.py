@@ -1,9 +1,9 @@
 from dataclasses import *
 from collections.abc import Callable
-from src.actions import Action
+from actions import Action
 
 import numpy as np
-from src.map import Map
+from map import Map
 
 UNKNOWN = -1
 KNOWN_FREE = 0
