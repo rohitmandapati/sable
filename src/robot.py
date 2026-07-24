@@ -1,10 +1,9 @@
-from dataclasses import *
-from collections.abc import Callable
-from actions import Action
+from dataclasses import dataclass, field
 
 import numpy as np
-from map import Map
 
+# Belief-map cell states describe what a robot believes about a cell,
+# distinct from the ground-truth Map grid (0 free / 1 wall)
 UNKNOWN = -1
 KNOWN_FREE = 0
 KNOWN_WALL = 1
@@ -20,8 +19,6 @@ class Robot:
     belief_map: np.ndarray = field(repr=False, init=False)
     trajectory_map: list[Position] = field(init=False)
     alive: bool = True
-    
-    
     
     def __post_init__(self) -> None:
         height, width = self.map_shape
