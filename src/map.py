@@ -1,12 +1,15 @@
 from dataclasses import dataclass, field
 from typing import List
+import zlib
 import numpy as np
+
+from default_maps import DEFAULT_MAPS
 
 @dataclass
 class Map:
     width: int
     height: int
-    seed: int | None = None
+    seed: int | str | None = None
     obstacle_density: float = 0.5
     min_free_fraction: float = 0.3
     max_generation_attempts: int = 100
@@ -17,20 +20,36 @@ class Map:
     free_cells: np.ndarray = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
-        self.grid = np.zeros((self.height, self.width), dtype=int)
-        self.rng = np.random.default_rng(seed=self.seed)
-        if self.obstacle_density is not None:
-            self.generate_random_map(self.obstacle_density)
+        if isinstance(self.seed, str):
+            entry = DEFAULT_MAPS.get(self.seed)
+            if entry is None:
+                raise ValueError(
+                    f"Unknown default map {self.seed!r}. "
+                    f"Available: {sorted(DEFAULT_MAPS)}"
+                )
+            # RNG needs an int seed; derive a stable one from the map name so
+            # any downstream randomness (e.g. robot placement) is reproducible.
+            self.rng = np.random.default_rng(seed=zlib.crc32(self.seed.encode()))
+            self.grid = np.array(entry["grid"], dtype=int)
+            self.free_cells = np.argwhere(self.grid == 0)
+            self.height, self.width = self.grid.shape
+            self.vacancies = len(self.free_cells)
+            self.obstacle_density = float(np.mean(self.grid == 1))
         else:
-            self.generate_random_map()
-        free_fraction = np.mean(self.grid == 0)
-        while free_fraction < self.min_free_fraction and self.max_generation_attempts > 0:
-            self.seed += 1
+            self.grid = np.zeros((self.height, self.width), dtype=int)
             self.rng = np.random.default_rng(seed=self.seed)
-            self.generate_random_map(self.obstacle_density)
+            if self.obstacle_density is not None:
+                self.generate_random_map(self.obstacle_density)
+            else:
+                self.generate_random_map()
             free_fraction = np.mean(self.grid == 0)
-            self.max_generation_attempts -= 1
-        self.free_cells = np.argwhere(self.grid == 0)
+            while free_fraction < self.min_free_fraction and self.max_generation_attempts > 0:
+                self.seed += 1
+                self.rng = np.random.default_rng(seed=self.seed)
+                self.generate_random_map(self.obstacle_density)
+                free_fraction = np.mean(self.grid == 0)
+                self.max_generation_attempts -= 1
+            self.free_cells = np.argwhere(self.grid == 0)
 
             
     
