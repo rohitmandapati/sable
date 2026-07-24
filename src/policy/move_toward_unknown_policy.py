@@ -6,7 +6,7 @@ from actions import Action
 from observations import RobotObservation
 from planning import is_frontier_cell
 from policy.move_random_policy import move_random
-from policy.move_toward_frontier import move_toward_frontier
+from policy.move_toward_frontier import move_toward_frontier_bfs, move_toward_frontier_astar
 from robot import KNOWN_WALL, UNKNOWN
 
 _MOVES = (Action.UP, Action.DOWN, Action.LEFT, Action.RIGHT)
@@ -64,4 +64,25 @@ def move_toward_unknown_bfs(
             continue
         if is_frontier_cell(belief, (nr, nc)):
             return move
-    return move_toward_frontier(observation, rng)
+    return move_toward_frontier_bfs(observation, rng)
+
+# Same but with A*
+def move_toward_unknown_astar(
+    observation: RobotObservation, rng: np.random.Generator
+) -> Action:
+    if not observation.alive:
+        raise RuntimeError("Inactive robot cannot move")
+
+    row, col = observation.position
+    height, width = observation.map_shape
+    belief = observation.belief_map
+
+    for move in _MOVES:
+        nr, nc = row + move.delta[0], col + move.delta[1]
+        if not (0 <= nr < height and 0 <= nc < width):
+            continue
+        if belief[nr, nc] == KNOWN_WALL:
+            continue
+        if is_frontier_cell(belief, (nr, nc)):
+            return move
+    return move_toward_frontier_astar(observation, rng)

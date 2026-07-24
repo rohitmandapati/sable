@@ -5,3 +5,8 @@
 docs/SABLE*
 results/
 tests/
+
+**/__pycache__/
+*.pyc
+*.pyo
+*.pyd

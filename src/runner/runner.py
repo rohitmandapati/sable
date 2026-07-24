@@ -192,11 +192,11 @@ if __name__ == "__main__":
     # Random maps each iteration
     print("--- random seeds ---")
     runner_random = Runner(
-        move_funcs=["move_toward_unknown_bfs", "move_random", "move_toward_frontier"],
+        move_funcs=["move_toward_unknown_bfs", "move_toward_frontier_bfs", "move_toward_frontier_astar"],
         size=(25, 25),
         seeds=None,
-        densities=0.5,
+        densities=0.3,
     )
-    results = runner_random.run(iters=20)
+    results = runner_random.run(iters=100)
     trial_dir = log_results(results, size=(25, 25))
     print(f"logged results to {trial_dir}")
