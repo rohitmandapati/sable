@@ -11,105 +11,109 @@ from map import Map
 from observations import RobotObservation
 from robot import KNOWN_FREE, Position, Robot
 
+from pettingzoo.utils.env import ParallelEnv
+
 # Sensor footprint: the robot's own cell plus its four orthogonal neighbors.
 _SENSOR_OFFSETS: tuple[Position, ...] = ((0, 0), (-1, 0), (1, 0), (0, -1), (0, 1))
 
 Reward = int
 Info = dict[str, object]
 
+class Environment(ParallelEnv):
+    
+    agents: list[str] 
+        
+    # def __init__(
+    #     self,
+    #     width: int,
+    #     height: int,
+    #     robot_ids: Iterable[str] = ("robot",),
+    #     obstacle_density: float = 0.2,
+    #     min_free_fraction: float = 0.3,
+    #     max_ticks: int = 100_000,
+    # ) -> None:
+    #     self.width = width
+    #     self.height = height
+    #     self.robot_ids: list[str] = list(robot_ids)
+    #     if not self.robot_ids:
+    #         raise ValueError("Environment needs at least one robot id")
+    #     if len(set(self.robot_ids)) != len(self.robot_ids):
+    #         raise ValueError("robot ids must be unique")
+    #     self.obstacle_density = obstacle_density
+    #     self.min_free_fraction = min_free_fraction
+    #     self.max_ticks = max_ticks
 
-class Environment:
-    def __init__(
-        self,
-        width: int,
-        height: int,
-        robot_ids: Iterable[str] = ("robot",),
-        obstacle_density: float = 0.2,
-        min_free_fraction: float = 0.3,
-        max_ticks: int = 100_000,
-    ) -> None:
-        self.width = width
-        self.height = height
-        self.robot_ids: list[str] = list(robot_ids)
-        if not self.robot_ids:
-            raise ValueError("Environment needs at least one robot id")
-        if len(set(self.robot_ids)) != len(self.robot_ids):
-            raise ValueError("robot ids must be unique")
-        self.obstacle_density = obstacle_density
-        self.min_free_fraction = min_free_fraction
-        self.max_ticks = max_ticks
+    #     self.map: Map | None = None
+    #     self.robots: dict[str, Robot] = {}
+    #     self.tick_count = 0
 
-        self.map: Map | None = None
-        self.robots: dict[str, Robot] = {}
-        self.tick_count = 0
+    # # -- lifecycle -----------------------------------------------------------
 
-    # -- lifecycle -----------------------------------------------------------
+    # def reset(self, seed: int | None = None) -> dict[str, RobotObservation]:
+    #     """Build a fresh world for seed, spawn robots, sense, return observations."""
+    #     self.map = Map(
+    #         width=self.width,
+    #         height=self.height,
+    #         seed=seed,
+    #         obstacle_density=self.obstacle_density,
+    #         min_free_fraction=self.min_free_fraction,
+    #     )
+    #     free_cells = self.map.free_cells
+    #     if len(free_cells) < len(self.robot_ids):
+    #         raise ValueError("Not enough free cells to spawn all robots")
 
-    def reset(self, seed: int | None = None) -> dict[str, RobotObservation]:
-        """Build a fresh world for seed, spawn robots, sense, return observations."""
-        self.map = Map(
-            width=self.width,
-            height=self.height,
-            seed=seed,
-            obstacle_density=self.obstacle_density,
-            min_free_fraction=self.min_free_fraction,
-        )
-        free_cells = self.map.free_cells
-        if len(free_cells) < len(self.robot_ids):
-            raise ValueError("Not enough free cells to spawn all robots")
+    #     # Spawn from the map's own rng stream (same draw the pre-refactor code
+    #     # used, so single-robot spawns are unchanged). Fully separating the
+    #     # spawn rng from map generation is deferred; see project notes.
+    #     indices = self.map.rng.choice(
+    #         len(free_cells), size=len(self.robot_ids), replace=False
+    #     )
+    #     map_shape = (self.height, self.width)
+    #     self.robots = {}
+    #     for rid, idx in zip(self.robot_ids, np.atleast_1d(indices)):
+    #         spawn = (int(free_cells[idx][0]), int(free_cells[idx][1]))
+    #         self.robots[rid] = Robot(robot_id=rid, pos=spawn, map_shape=map_shape)
 
-        # Spawn from the map's own rng stream (same draw the pre-refactor code
-        # used, so single-robot spawns are unchanged). Fully separating the
-        # spawn rng from map generation is deferred; see project notes.
-        indices = self.map.rng.choice(
-            len(free_cells), size=len(self.robot_ids), replace=False
-        )
-        map_shape = (self.height, self.width)
-        self.robots = {}
-        for rid, idx in zip(self.robot_ids, np.atleast_1d(indices)):
-            spawn = (int(free_cells[idx][0]), int(free_cells[idx][1]))
-            self.robots[rid] = Robot(robot_id=rid, pos=spawn, map_shape=map_shape)
+    #     self.tick_count = 0
+    #     for robot in self.robots.values():
+    #         self._sense(robot)
+    #     return self._observations()
 
-        self.tick_count = 0
-        for robot in self.robots.values():
-            self._sense(robot)
-        return self._observations()
+    # def step(self, actions: Mapping[str, object]) -> tuple[dict[str, RobotObservation], dict[str, Reward], bool, bool, Info]:
+    #     if self.map is None:
+    #         raise RuntimeError("call reset() before step()")
 
-    def step(self, actions: Mapping[str, object]) -> tuple[dict[str, RobotObservation], dict[str, Reward], bool, bool, Info]:
-        if self.map is None:
-            raise RuntimeError("call reset() before step()")
+    #     self.tick_count += 1
 
-        self.tick_count += 1
+    #     # Validate each alive robot's action into a target cell
+    #     desired: dict[str, Position] = {}
+    #     for rid, robot in self.robots.items():
+    #         if not robot.alive:
+    #             continue
+    #         action = Action.coerce(actions.get(rid)) or Action.STAY
+    #         desired[rid] = self._validated_target(robot, action)
 
-        # Validate each alive robot's action into a target cell
-        desired: dict[str, Position] = {}
-        for rid, robot in self.robots.items():
-            if not robot.alive:
-                continue
-            action = Action.coerce(actions.get(rid)) or Action.STAY
-            desired[rid] = self._validated_target(robot, action)
+    #     # Resolve simultaneous movement (single robot: no-op)
+    #     resolved = self._resolve_collisions(desired)
 
-        # Resolve simultaneous movement (single robot: no-op)
-        resolved = self._resolve_collisions(desired)
+    #     # Apply moves and sense, set_position appends to the trajectory every
+    #     # tick
+    #     newly: dict[str, int] = {}
+    #     for rid, robot in self.robots.items():
+    #         if not robot.alive:
+    #             continue
+    #         robot.set_position(resolved[rid])
+    #         newly[rid] = self._sense(robot)
 
-        # Apply moves and sense, set_position appends to the trajectory every
-        # tick
-        newly: dict[str, int] = {}
-        for rid, robot in self.robots.items():
-            if not robot.alive:
-                continue
-            robot.set_position(resolved[rid])
-            newly[rid] = self._sense(robot)
-
-        observations = self._observations()
-        terminated = self.coverage_complete()
-        truncated = self.tick_count >= self.max_ticks and not terminated
-        info: Info = {
-            "coverage": self.coverage(),
-            "tick": self.tick_count,
-            "newly_revealed": newly,
-        }
-        return observations, dict(newly), terminated, truncated, info
+    #     observations = self._observations()
+    #     terminated = self.coverage_complete()
+    #     truncated = self.tick_count >= self.max_ticks and not terminated
+    #     info: Info = {
+    #         "coverage": self.coverage(),
+    #         "tick": self.tick_count,
+    #         "newly_revealed": newly,
+    #     }
+    #     return observations, dict(newly), terminated, truncated, info
 
     # -- queries -------------------------------------------------------------
 

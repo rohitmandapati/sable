@@ -11,6 +11,16 @@ class Action(Enum):
     DOWN = (1, 0)
     LEFT = (0, -1)
     RIGHT = (0, 1)
+    
+    @classmethod
+    def action_space(cls) -> set["Action"]:
+        return {
+            cls.STAY,
+            cls.UP,
+            cls.DOWN,
+            cls.LEFT,
+            cls.RIGHT,
+        }
 
     @property
     def delta(self) -> tuple[int, int]:

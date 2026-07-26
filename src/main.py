@@ -5,7 +5,7 @@
 
 import numpy as np
 
-from environment import Environment
+from environment_old import Environment
 from policy import make_policy
 from renderer import Renderer
 

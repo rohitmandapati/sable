@@ -10,3 +10,5 @@ tests/
 *.pyc
 *.pyo
 *.pyd
+
+environment_old.py
