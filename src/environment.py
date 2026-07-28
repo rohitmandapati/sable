@@ -11,14 +11,22 @@ from map import Map
 from observations import RobotObservation
 from robot import KNOWN_FREE, Position, Robot
 
+from pettingzoo.utils.env import ParallelEnv
+
+import functools
+from gymnasium.spaces import Box, Dict, Discrete
+from pettingzoo.utils.env import ParallelEnv
+
 # Sensor footprint: the robot's own cell plus its four orthogonal neighbors.
 _SENSOR_OFFSETS: tuple[Position, ...] = ((0, 0), (-1, 0), (1, 0), (0, -1), (0, 1))
 
 Reward = int
 Info = dict[str, object]
 
-
-class Environment:
+class Environment(ParallelEnv):
+    
+    agents: list[str] 
+        
     def __init__(
         self,
         width: int,
@@ -42,11 +50,24 @@ class Environment:
         self.map: Map | None = None
         self.robots: dict[str, Robot] = {}
         self.tick_count = 0
+        self.possible_agents = list(self.robot_ids)
+        self.agents = [] # starts empty, might change now or change later during reset
+        
+    @functools.lru_cache(maxsize=None)
+    def action_space(self, agent):
+        return Discrete(5) # STAY, UP, DOWN, LEFT, RIGHT, will be changed to communication actions
+    
+    @functools.lru_cache(maxsize=None)
+    def observation_space(self, agent):
+        return Dict({
+            "position":   Box(0, max(self.height, self.width), (2,), dtype=np.int64),
+            "belief_map": Box(-1, 1, (self.height, self.width), dtype=np.int8),
+        })
 
     # -- lifecycle -----------------------------------------------------------
 
-    def reset(self, seed: int | None = None) -> dict[str, RobotObservation]:
-        """Build a fresh world for seed, spawn robots, sense, return observations."""
+    def reset(self, seed=None, options=None):
+        # Build a fresh world for seed, spawn robots, sense, return observations.
         self.map = Map(
             width=self.width,
             height=self.height,
@@ -73,7 +94,10 @@ class Environment:
         self.tick_count = 0
         for robot in self.robots.values():
             self._sense(robot)
-        return self._observations()
+        self.agents = self.active_robot_ids()
+        observations = self._observations()
+        infos = {rid: {} for rid in self.agents}
+        return observations, infos
 
     def step(self, actions: Mapping[str, object]) -> tuple[dict[str, RobotObservation], dict[str, Reward], bool, bool, Info]:
         if self.map is None:
@@ -101,15 +125,17 @@ class Environment:
             robot.set_position(resolved[rid])
             newly[rid] = self._sense(robot)
 
-        observations = self._observations()
+        raw = self._observations()
         terminated = self.coverage_complete()
         truncated = self.tick_count >= self.max_ticks and not terminated
-        info: Info = {
-            "coverage": self.coverage(),
-            "tick": self.tick_count,
-            "newly_revealed": newly,
-        }
-        return observations, dict(newly), terminated, truncated, info
+        observations = {rid: raw[rid] for rid in self.agents}
+        rewards = {rid: float(newly.get(rid, 0)) for rid in self.agents}
+        terminations = {rid: terminated for rid in self.agents}
+        truncations = {rid: truncated for rid in self.agents}
+        infos = {rid: {} for rid in self.agents}
+        
+        self.agents = [rid for rid in self.agents if not (terminations[rid] or truncations[rid])]
+        return observations, rewards, terminations, truncations, infos
 
     # -- queries -------------------------------------------------------------
 

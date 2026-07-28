@@ -4,9 +4,10 @@
 # renderer.py is WIP, not ready yet.
 docs/SABLE*
 results/
-tests/
 
 **/__pycache__/
 *.pyc
 *.pyo
 *.pyd
+
+environment_old.py

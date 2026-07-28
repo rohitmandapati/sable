@@ -52,18 +52,17 @@ class Runner:
         # independent of which policy is being benchmarked.
         policy_rng = np.random.default_rng(self.policy_seed + seed)
 
-        observations = env.reset(seed=seed)
+        observations, _ = env.reset(seed=seed)
         free_cells = len(env.map.free_cells)
-
-        terminated = env.coverage_complete()
-        truncated = False
-        while not (terminated or truncated):
+        
+        while env.agents:
             actions = {
                 rid: policy.act(observations[rid], policy_rng)
-                for rid in env.active_robot_ids()
+                for rid in env.agents
             }
-            observations, _rewards, terminated, truncated, _info = env.step(actions)
-
+            observations, _rewards, _terminated, _truncated, _info = env.step(actions)
+            
+        truncated = env.tick_count >= self.max_ticks and not env.coverage_complete()
         if truncated:
             return None
         return env.tick_count, free_cells
