@@ -7,7 +7,6 @@ import numpy as np
 
 
 class Action(Enum):
-    ACTION_ORDER: tuple[Action, ...] = tuple(Action)
 
     STAY = (0, 0)
     UP = (-1, 0)
@@ -39,7 +38,7 @@ class Action(Enum):
             return value
         if isinstance(value, (int, np.integer)): #discrete sampling for gymnasium spaces
             try:
-                return cls.ACTION_ORDER[int(value)]
+                return ACTION_ORDER[int(value)]
             except IndexError:
                 return None
         if isinstance(value, tuple) and len(value) == 2:
@@ -51,3 +50,4 @@ class Action(Enum):
 
 
 _DELTA_TO_ACTION: dict[tuple[int, int], Action] = {a.value: a for a in Action}
+ACTION_ORDER: tuple[Action, ...] = tuple(Action)

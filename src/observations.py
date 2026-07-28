@@ -32,3 +32,10 @@ class RobotObservation:
             map_shape=(int(robot.map_shape[0]), int(robot.map_shape[1])),
             alive=robot.alive,
         )
+    
+    def _to_gym_obs(self, obs):
+        return {
+            "position":   np.asarray(obs.position, dtype=np.int64),
+            "belief_map": np.asarray(obs.belief_map, dtype=np.int8),
+        }
+
