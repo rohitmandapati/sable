@@ -1,11 +1,14 @@
-# Actions a robot can take in the environment
-
 from __future__ import annotations
 
 from enum import Enum
+import numpy as np
+
+# Actions a robot can take in the environment
 
 
 class Action(Enum):
+    ACTION_ORDER: tuple[Action, ...] = tuple(Action)
+
     STAY = (0, 0)
     UP = (-1, 0)
     DOWN = (1, 0)
@@ -34,6 +37,11 @@ class Action(Enum):
     def coerce(cls, value: object) -> "Action | None":
         if isinstance(value, cls):
             return value
+        if isinstance(value, (int, np.integer)): #discrete sampling for gymnasium spaces
+            try:
+                return cls.ACTION_ORDER[int(value)]
+            except IndexError:
+                return None
         if isinstance(value, tuple) and len(value) == 2:
             try:
                 return _DELTA_TO_ACTION[(int(value[0]), int(value[1]))]

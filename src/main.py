@@ -5,7 +5,7 @@
 
 import numpy as np
 
-from environment_old import Environment
+from environment import Environment
 from policy import make_policy
 from renderer import Renderer
 
@@ -21,12 +21,12 @@ if __name__ == "__main__":
     policy = make_policy("move_toward_frontier")
     policy_rng = np.random.default_rng(SEED)
 
-    observations = env.reset(seed=SEED)
+    observations, _ = env.reset(seed=SEED)
     renderer = Renderer(env.map, cell_size=60, fps=10)
 
     terminated = env.coverage_complete()
     truncated = False
-    while not (terminated or truncated):
+    while env.agents:
         actions = {
             rid: policy.act(observations[rid], policy_rng)
             for rid in env.active_robot_ids()
