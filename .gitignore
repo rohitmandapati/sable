@@ -2,7 +2,7 @@
 /__pycache__/
 .claude
 # renderer.py is WIP, not ready yet.
-docs/SABLE*
+docs/
 results/
 
 **/__pycache__/

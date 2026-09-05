@@ -25,6 +25,14 @@ _SENSOR_OFFSETS: tuple[Position, ...] = ((0, 0), (-1, 0), (1, 0), (0, -1), (0, 1
 # cell, one contender is chosen at random to proceed so the team can't livelock.
 _CONTENTION_LIMIT = 2
 
+# Stochastic backtracking: a robot that wanted to move but was held in place for
+# more than this many consecutive ticks will, with probability _BACKTRACK_PROB,
+# take a random legal step instead of its policy move. This perturbs a robot out
+# of a standoff that tie-breaking alone can't resolve -- e.g. a robot endlessly
+# re-targeting a cell it keeps losing and oscillating in place.
+_BACKTRACK_LIMIT = 2
+_BACKTRACK_PROB = 0.5
+
 Reward = int
 Info = dict[str, object]
 
@@ -63,7 +71,10 @@ class Environment(ParallelEnv):
         # the map stream, plus a per-cell counter of consecutive contested ticks.
         self._rng: np.random.Generator | None = None
         self._contention: dict[Position, int] = {}
-        
+        # Per-robot consecutive "blocked" tick counter, drives stochastic
+        # backtracking (see _BACKTRACK_LIMIT).
+        self._stuck: dict[str, int] = {}
+
     @functools.lru_cache(maxsize=None)
     def action_space(self, agent):
         return Discrete(5) # STAY, UP, DOWN, LEFT, RIGHT, will be changed to communication actions
@@ -90,6 +101,7 @@ class Environment(ParallelEnv):
         # own stream) so collision resolution is reproducible per run.
         self._rng = np.random.default_rng(seed)
         self._contention = {}
+        self._stuck = {}
         free_cells = self.map.free_cells
         if len(free_cells) < len(self.robot_ids):
             raise ValueError("Not enough free cells to spawn all robots")
@@ -126,7 +138,16 @@ class Environment(ParallelEnv):
             if not robot.alive:
                 continue
             action = Action.coerce(actions.get(rid)) or Action.STAY
-            desired[rid] = self._validated_target(robot, action)
+            target = self._validated_target(robot, action)
+            if (
+                self._stuck.get(rid, 0) > _BACKTRACK_LIMIT
+                and self._rng.random() < _BACKTRACK_PROB
+            ):
+                target = self._random_step_target(robot)
+            desired[rid] = target
+
+        # Positions before movement, needed to tell whether a robot was blocked.
+        before: dict[str, Position] = {rid: self.robots[rid].pos for rid in desired}
 
         # Resolve simultaneous movement (single robot: no-op)
         resolved = self._resolve_collisions(desired)
@@ -139,6 +160,14 @@ class Environment(ParallelEnv):
                 continue
             robot.set_position(resolved[rid])
             newly[rid] = self._sense(robot)
+
+        # A robot that wanted to move but stayed put was blocked; track the run
+        # of consecutive blocked ticks so backtracking can trigger.
+        for rid in desired:
+            if desired[rid] != before[rid] and resolved[rid] == before[rid]:
+                self._stuck[rid] = self._stuck.get(rid, 0) + 1
+            else:
+                self._stuck[rid] = 0
 
         raw = self._observations()
         terminated = self.coverage_complete()
@@ -191,6 +220,22 @@ class Environment(ParallelEnv):
         if self.map.grid[nr, nc] == 1:
             return robot.pos  # walk into a wall -> stay
         return (nr, nc)
+
+    def _random_step_target(self, robot: Robot) -> Position:
+        # A uniformly random in-bounds, non-wall neighbour (or stay if boxed in).
+        # Collision resolution still applies, so this move is not privileged.
+        assert self.map is not None and self._rng is not None
+        r, c = robot.pos
+        candidates = [
+            (r + dr, c + dc)
+            for dr, dc in ((-1, 0), (1, 0), (0, -1), (0, 1))
+            if 0 <= r + dr < self.height
+            and 0 <= c + dc < self.width
+            and self.map.grid[r + dr, c + dc] == 0
+        ]
+        if not candidates:
+            return robot.pos
+        return candidates[int(self._rng.integers(len(candidates)))]
 
     def _resolve_collisions(
         self, desired: dict[str, Position]

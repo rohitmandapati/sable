@@ -4,6 +4,7 @@ An open (density 0.0) map has walled borders, so a 5x5 map is a connected 3x3
 interior room (cells with row/col in 1..3) that we can place robots into by hand.
 """
 
+from actions import Action
 from environment import Environment
 
 
@@ -42,6 +43,23 @@ def test_cannot_enter_occupied_cell_even_after_limit():
         resolved = env._resolve_collisions(desired)
         assert resolved["a"] == (1, 1)
         assert resolved["b"] == (1, 2)
+
+
+def test_stuck_robot_backtracks_out():
+    # a keeps trying to move RIGHT into stationary b, so its policy move is
+    # always blocked from (1,1). The only way off (1,1) is a stochastic
+    # backtracking step, so any change in a's position proves backtracking fired.
+    env = _open_env()
+    env.robots["a"].pos = (1, 1)
+    env.robots["b"].pos = (1, 2)
+
+    moved_off = False
+    for _ in range(30):
+        env.step({"a": Action.RIGHT, "b": Action.STAY})
+        if env.robots["a"].pos != (1, 1):
+            moved_off = True
+            break
+    assert moved_off
 
 
 def test_contention_counter_resets_when_uncontested():
