@@ -54,4 +54,10 @@ class Robot:
         if self.belief_map[row][col] == UNKNOWN:
             self.belief_map[row][col] = value
         else: return # already seen, ignore
-            
+     
+     
+    #TODO: Implement broadcasting to other robots, for now just a placeholder       
+    def broadcast_observation(self, other_robots: list['Robot'] = [], position: Position = None, value: int = None) -> None:
+        if not self.alive:
+            raise RuntimeError("Inactive robot cannot broadcast observations")
+        pass
