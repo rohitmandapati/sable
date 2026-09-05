@@ -20,6 +20,11 @@ from pettingzoo.utils.env import ParallelEnv
 # Sensor footprint: the robot's own cell plus its four orthogonal neighbors.
 _SENSOR_OFFSETS: tuple[Position, ...] = ((0, 0), (-1, 0), (1, 0), (0, -1), (0, 1))
 
+# Consecutive contested ticks a cell tolerates before randomized tie-breaking
+# kicks in. After more than this many ticks of robots racing the same empty
+# cell, one contender is chosen at random to proceed so the team can't livelock.
+_CONTENTION_LIMIT = 2
+
 Reward = int
 Info = dict[str, object]
 
@@ -52,6 +57,12 @@ class Environment(ParallelEnv):
         self.tick_count = 0
         self.possible_agents = list(self.robot_ids)
         self.agents = [] # starts empty, might change now or change later during reset
+
+        # Randomized tie-breaking state (set up per-episode in reset):
+        # a dedicated RNG so collision draws are reproducible and independent of
+        # the map stream, plus a per-cell counter of consecutive contested ticks.
+        self._rng: np.random.Generator | None = None
+        self._contention: dict[Position, int] = {}
         
     @functools.lru_cache(maxsize=None)
     def action_space(self, agent):
@@ -75,6 +86,10 @@ class Environment(ParallelEnv):
             obstacle_density=self.obstacle_density,
             min_free_fraction=self.min_free_fraction,
         )
+        # Tie-break RNG is seeded from the episode seed (independent of the map's
+        # own stream) so collision resolution is reproducible per run.
+        self._rng = np.random.default_rng(seed)
+        self._contention = {}
         free_cells = self.map.free_cells
         if len(free_cells) < len(self.robot_ids):
             raise ValueError("Not enough free cells to spawn all robots")
@@ -187,10 +202,43 @@ class Environment(ParallelEnv):
         occupancy: dict[Position, list[str]] = defaultdict(list)
         for rid, target in desired.items():
             occupancy[target].append(rid)
+
+        contested_now: set[Position] = set()
         for target, rids in occupancy.items():
-            if len(rids) > 1:
+            if len(rids) <= 1:
+                continue
+
+            # A robot already sitting on the target cell holds it; nobody may
+            # move in on top of it (that would put two robots on one cell), so
+            # the others just stay and re-route next tick (not a race)
+            if any(current[rid] == target for rid in rids):
+                for rid in rids:
+                    if current[rid] != target:
+                        final[rid] = current[rid]
+                continue
+
+            # every contender is moving into a currently-empty cell.
+            # Count consecutive contested ticks; once it exceeds the limit,
+            # pick one contender at random to proceed and hold the rest. Below
+            # the limit, keep the conservative "everyone stays" rule.
+            contested_now.add(target)
+            self._contention[target] = self._contention.get(target, 0) + 1
+            if self._contention[target] > _CONTENTION_LIMIT:
+                assert self._rng is not None  # set in reset()
+                # Sorted candidates keep the draw reproducible; which robot is
+                # favoured is a policy knob we may learn/optimize later.
+                winner = str(self._rng.choice(sorted(rids)))
+                for rid in rids:
+                    if rid != winner:
+                        final[rid] = current[rid]
+            else:
                 for rid in rids:
                     final[rid] = current[rid]
+
+        # Forget cells that were not contested this tick so the counter only
+        # tracks *consecutive* standoffs.
+        for target in [t for t in self._contention if t not in contested_now]:
+            del self._contention[target]
 
         ids = sorted(desired)
         for i, a in enumerate(ids):
