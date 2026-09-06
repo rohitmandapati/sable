@@ -22,6 +22,9 @@ class Runner:
         max_ticks: int = 100_000,
         seed_stream: int = 0,
         policy_seed: int = 0,
+        enable_comms: bool = False,
+        comms_drop_prob: float = 0.0,
+        comms_max_bytes_per_tick: int | None = None,
     ):
         self.move_funcs = move_funcs
         self.width, self.height = size
@@ -33,6 +36,11 @@ class Runner:
         # Deterministic seed selection: replaces the old global `random` module.
         self._seed_rng = np.random.default_rng(seed_stream)
         self.policy_seed = policy_seed
+        # Comms toggle so a sweep can compare coordinated (belief-sharing) teams
+        # against the uncoordinated baseline on identical maps.
+        self.enable_comms = enable_comms
+        self.comms_drop_prob = comms_drop_prob
+        self.comms_max_bytes_per_tick = comms_max_bytes_per_tick
 
     def _iter_seeds(self, iters: int):
         if self.seeds:
@@ -55,6 +63,11 @@ class Runner:
             robot_ids=robot_ids,
             obstacle_density=density,
             max_ticks=self.max_ticks,
+            enable_comms=self.enable_comms,
+            comms_drop_prob=self.comms_drop_prob,
+            comms_max_bytes_per_tick=self.comms_max_bytes_per_tick,
+            # Tie comms loss to the episode seed so on/off runs stay reproducible.
+            comms_seed=seed,
         )
         policy = make_policy(move_func)
         # One shared (stateless) policy, but an independent RNG per robot so that
@@ -250,3 +263,19 @@ if __name__ == "__main__":
     results = runner_random.run(iters=25)
     trial_dir = log_results(results, size=(25, 25))
     print(f"logged results to {trial_dir}")
+
+    # Comms on vs off on identical maps (fixed seeds): coordinated belief-sharing
+    # should cut redundant exploration versus the uncoordinated baseline.
+    print("\n--- comms on vs off (frontier A*, n=4, fixed maps) ---")
+    fixed_seeds = list(range(15))
+    for label, enable in (("comms OFF", False), ("comms ON (lossless)", True)):
+        print(f"[{label}]")
+        Runner(
+            move_funcs=["move_toward_frontier_astar"],
+            size=(25, 25),
+            seeds=fixed_seeds,
+            densities=0.3,
+            num_robots=[4],
+            max_ticks=5000,
+            enable_comms=enable,
+        ).run(iters=1)

@@ -7,6 +7,7 @@ from collections.abc import Iterable, Mapping
 import numpy as np
 
 from actions import Action
+from comms import Cell, CommsChannel, LinkModel
 from map import Map
 from observations import RobotObservation
 from robot import KNOWN_FREE, Position, Robot
@@ -48,6 +49,10 @@ class Environment(ParallelEnv):
         obstacle_density: float = 0.2,
         min_free_fraction: float = 0.3,
         max_ticks: int = 100_000,
+        enable_comms: bool = False,
+        comms_drop_prob: float = 0.0,
+        comms_max_bytes_per_tick: int | None = None,
+        comms_seed: int | None = None,
     ) -> None:
         self.width = width
         self.height = height
@@ -59,6 +64,16 @@ class Environment(ParallelEnv):
         self.obstacle_density = obstacle_density
         self.min_free_fraction = min_free_fraction
         self.max_ticks = max_ticks
+
+        # Comms (off by default so the classical baseline is untouched). When on,
+        # robots broadcast newly-sensed cells each tick; received cells fill
+        # belief_map only (never sensed_mask), so physical-sensing redundancy
+        # stays a true measure of duplicated exploration effort.
+        self.enable_comms = enable_comms
+        self.comms_drop_prob = comms_drop_prob
+        self.comms_max_bytes_per_tick = comms_max_bytes_per_tick
+        self.comms_seed = comms_seed
+        self.comms: CommsChannel | None = None
 
         self.map: Map | None = None
         self.robots: dict[str, Robot] = {}
@@ -102,6 +117,19 @@ class Environment(ParallelEnv):
         self._rng = np.random.default_rng(seed)
         self._contention = {}
         self._stuck = {}
+
+        # Fresh comms channel per episode. The link RNG is seeded from an explicit
+        # comms_seed when given, else the episode seed, so runs reproduce.
+        if self.enable_comms:
+            link = LinkModel(
+                drop_prob=self.comms_drop_prob,
+                max_bytes_per_tick=self.comms_max_bytes_per_tick,
+                seed=self.comms_seed if self.comms_seed is not None else seed,
+            )
+            self.comms = CommsChannel(link)
+        else:
+            self.comms = None
+
         free_cells = self.map.free_cells
         if len(free_cells) < len(self.robot_ids):
             raise ValueError("Not enough free cells to spawn all robots")
@@ -155,11 +183,19 @@ class Environment(ParallelEnv):
         # Apply moves and sense, set_position appends to the trajectory every
         # tick
         newly: dict[str, int] = {}
+        sensed_cells: dict[str, list[Cell]] = {}
         for rid, robot in self.robots.items():
             if not robot.alive:
                 continue
             robot.set_position(resolved[rid])
-            newly[rid] = self._sense(robot)
+            revealed = self._sense(robot)
+            sensed_cells[rid] = revealed
+            newly[rid] = len(revealed)
+
+        # Share this tick's newly-sensed cells over the (lossy) comms channel and
+        # fold whatever arrives into each robot's belief. Off unless enabled.
+        if self.comms is not None:
+            self._exchange_comms(sensed_cells)
 
         # A robot that wanted to move but stayed put was blocked; track the run
         # of consecutive blocked ticks so backtracking can trigger.
@@ -297,19 +333,46 @@ class Environment(ParallelEnv):
                     final[b] = current[b]
         return final
 
-    def _sense(self, robot: Robot) -> int:
-        """Reveal ground truth in the sensor footprint; return newly revealed."""
+    def _sense(self, robot: Robot) -> list[Cell]:
+        """Reveal ground truth in the sensor footprint; return newly-revealed cells.
+
+        Each returned cell is ((row, col), belief_value) for a cell that was
+        UNKNOWN before this sweep -- i.e. the belief delta this robot can share.
+        """
         assert self.map is not None
         row, col = robot.pos
-        revealed = 0
+        revealed: list[Cell] = []
         for dr, dc in _SENSOR_OFFSETS:
             r, c = row + dr, col + dc
             if 0 <= r < self.height and 0 <= c < self.width:
-                if robot.belief_map[r, c] == -1:  # UNKNOWN
-                    revealed += 1
-                robot.reveal_cell((r, c), int(self.map.grid[r, c]))
+                value = int(self.map.grid[r, c])
+                if robot.belief_map[r, c] == -1:  # UNKNOWN -> newly revealed
+                    revealed.append(((r, c), value))
+                robot.reveal_cell((r, c), value)
                 robot.sensed_mask[r, c] = True
         return revealed
+
+    def _exchange_comms(self, sensed_cells: dict[str, list[Cell]]) -> None:
+        # Broadcast each robot's newly-sensed cells to every other alive robot,
+        # then drain inboxes into belief. Delivery is decided by the LinkModel
+        # (uniform drop + per-recipient per-tick bandwidth cap); received cells
+        # update belief_map ONLY -- reveal_cell fills UNKNOWN cells and never
+        # touches sensed_mask, so a robot's first-hand sensing is never
+        # overwritten and the redundancy metric stays physical.
+        assert self.comms is not None
+        alive = self.active_robot_ids()
+        for rid in alive:
+            cells = tuple(sensed_cells.get(rid, ()))
+            if not cells:
+                continue
+            recipients = [other for other in alive if other != rid]
+            if recipients:
+                self.comms.send(rid, cells, recipients, self.tick_count)
+        for rid in alive:
+            robot = self.robots[rid]
+            for message in self.comms.receive(rid):
+                for (r, c), value in message.cells:
+                    robot.reveal_cell((r, c), value)
 
     def _known_free_mask(self) -> np.ndarray:
         mask = np.zeros((self.height, self.width), dtype=bool)
