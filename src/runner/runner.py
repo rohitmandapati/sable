@@ -8,7 +8,6 @@ import numpy as np
 
 from environment import Environment
 from policy import make_policy
-from robot import UNKNOWN
 
 
 class Runner:
@@ -43,25 +42,6 @@ class Runner:
         else:
             for _ in range(iters):
                 yield int(self._seed_rng.integers(0, 2**31 - 1))
-
-    @staticmethod
-    def _redundancy(env: Environment) -> float:
-        # Fraction of sensing effort that was duplicated across robots with no
-        # communication. Sum of per-robot known cells vs the team union. 0 when
-        # a single robot explores, grows as uncoordinated robots re-cover ground.
-        #
-        # This is the waste a communication layer is meant to eliminate.
-        # The reference metric comms is measured against!
-        sum_known = 0
-        union = np.zeros((env.height, env.width), dtype=bool)
-        for robot in env.robots.values():
-            known = robot.belief_map != UNKNOWN
-            sum_known += int(known.sum())
-            union |= known
-        team_known = int(union.sum())
-        if team_known == 0:
-            return 0.0
-        return (sum_known - team_known) / team_known
 
     def _run_once(
         self, move_func: str, seed: int, density: float, n: int
@@ -98,7 +78,7 @@ class Runner:
         truncated = env.tick_count >= self.max_ticks and not env.coverage_complete()
         if truncated:
             return None
-        return env.tick_count, free_cells, self._redundancy(env)
+        return env.tick_count, free_cells, env.sensing_redundancy()
 
     def run(
         self,

@@ -308,6 +308,7 @@ class Environment(ParallelEnv):
                 if robot.belief_map[r, c] == -1:  # UNKNOWN
                     revealed += 1
                 robot.reveal_cell((r, c), int(self.map.grid[r, c]))
+                robot.sensed_mask[r, c] = True
         return revealed
 
     def _known_free_mask(self) -> np.ndarray:
@@ -315,3 +316,20 @@ class Environment(ParallelEnv):
         for robot in self.robots.values():
             mask |= robot.belief_map == KNOWN_FREE
         return mask
+
+    def sensing_redundancy(self) -> float:
+        # Average number of extra robots that physically sensed each cell.
+        # rho = (sum over robots of |cells that robot sensed| - |team-sensed union|)
+        #       / |team-sensed union|
+        # Counts each robot's own-sensor coverage (free + wall), so it isolates
+        # cross-robot duplicated exploration effort
+        # 0 for a single robot; bounded above by n-1
+        sum_sensed = 0
+        union = np.zeros((self.height, self.width), dtype=bool)
+        for robot in self.robots.values():
+            sum_sensed += int(robot.sensed_mask.sum())
+            union |= robot.sensed_mask
+        team_sensed = int(union.sum())
+        if team_sensed == 0:
+            return 0.0
+        return (sum_sensed - team_sensed) / team_sensed
