@@ -7,6 +7,8 @@
 # TODO (next stages): distance-based drop + hard range cutoff, then latency /
 # staleness (delivery-tick gating in the channel's receive()).
 
+# TODO Longterm, replace with GoLang networking daemon
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
