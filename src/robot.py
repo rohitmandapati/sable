@@ -17,9 +17,14 @@ class Robot:
     # map: Map # Must be VERY careful accessing this, don't want any accidental leakage but need to know the map the robot belongs to
     map_shape: tuple[int,int]
     belief_map: np.ndarray = field(repr=False, init=False)
+    # Cells this robot has swept with its OWN sensor (any tick). Distinct from
+    # belief_map: once comms lands, belief will also hold cells received from
+    # teammates, but sensed_mask records only first-hand sensing so physical
+    # sensing redundancy stays a true measure of duplicated exploration effort.
+    sensed_mask: np.ndarray = field(repr=False, init=False)
     trajectory_map: list[Position] = field(init=False)
     alive: bool = True
-    
+
     def __post_init__(self) -> None:
         height, width = self.map_shape
         if height <= 0 or width <= 0:
@@ -29,6 +34,7 @@ class Robot:
         if not (0 <= self.pos[1] < width):
             raise ValueError("Robot column is outside the map")
         self.belief_map = np.full(self.map_shape, UNKNOWN, dtype=np.int8)
+        self.sensed_mask = np.zeros(self.map_shape, dtype=bool)
         self.trajectory_map = [self.pos]
 
     @property
@@ -54,10 +60,4 @@ class Robot:
         if self.belief_map[row][col] == UNKNOWN:
             self.belief_map[row][col] = value
         else: return # already seen, ignore
-     
-     
-    #TODO: Implement broadcasting to other robots, for now just a placeholder       
-    def broadcast_observation(self, other_robots: list['Robot'] = [], position: Position = None, value: int = None) -> None:
-        if not self.alive:
-            raise RuntimeError("Inactive robot cannot broadcast observations")
-        pass
+    

@@ -5,7 +5,7 @@ conftest.py puts src/ on sys.path, so imports are flat (from comms import ...).
 
 import pytest
 
-from comms import CommsChannel, Message
+from comms import CommsChannel, LinkModel, Message
 from robot import KNOWN_FREE, KNOWN_WALL
 
 
