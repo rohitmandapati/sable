@@ -53,9 +53,9 @@ class Runner:
 
     def _run_once(
         self, move_func: str, seed: int, density: float, n: int
-    ) -> tuple[int, int, float, int, int] | None:
-        # Returns (ticks, free_cells, redundancy, wall_bumps, conflicts) for a
-        # completed run, or None on timeout.
+    ) -> tuple[int, int, float, int, int, float] | None:
+        # Returns (ticks, free_cells, redundancy, wall_bumps, conflicts,
+        # realized_density) for a completed run, or None on timeout.
         robot_ids = [f"r{i}" for i in range(n)]
         env = Environment(
             width=self.width,
@@ -66,20 +66,23 @@ class Runner:
             enable_comms=self.enable_comms,
             comms_drop_prob=self.comms_drop_prob,
             comms_max_bytes_per_tick=self.comms_max_bytes_per_tick,
-            # Tie comms loss to the episode seed so on/off runs stay reproducible.
-            comms_seed=seed,
         )
-        policy = make_policy(move_func)
-        # One shared (stateless) policy, but an independent RNG per robot so that
-        # random tie-breaking does not correlate across the team. Entropy is a
-        # sequence so distinct (seed, robot) pairs never collide.
-        policy_rngs = {
-            rid: np.random.default_rng([self.policy_seed, seed, i])
-            for i, rid in enumerate(robot_ids)
-        }
 
         observations, _ = env.reset(seed=seed)
         free_cells = len(env.map.free_cells)
+        # Realized density differs from the requested density because pruning to
+        # the largest connected component changes how many walls survive.
+        realized_density = env.map.realized_obstacle_density
+
+        policy = make_policy(move_func)
+        # One shared (stateless) policy, but an independent RNG per robot rooted
+        # in the episode's dedicated policy stream (self.policy_seed varies policy
+        # behaviour while holding the map/spawn streams fixed).
+        policy_seq = np.random.SeedSequence([env.seeds.policy, self.policy_seed])
+        policy_rngs = {
+            rid: np.random.default_rng(child)
+            for rid, child in zip(robot_ids, policy_seq.spawn(len(robot_ids)))
+        }
 
         while env.agents:
             actions = {
@@ -97,6 +100,7 @@ class Runner:
             env.sensing_redundancy(),
             env.wall_bumps,
             env.conflicts,
+            realized_density,
         )
 
     def run(
@@ -116,24 +120,27 @@ class Runner:
                     redundancy: list[float] = []
                     wall_bumps: list[int] = []
                     conflicts: list[int] = []
+                    realized: list[float] = []
                     runs = 0
                     # Reuse the same trials for each policy / robot count.
                     for seed in trial_seeds:
                         runs += 1
                         result = self._run_once(move_func, seed, density, n)
                         if result is not None:
-                            run_ticks, run_free, run_red, run_wall, run_conf = result
+                            run_ticks, run_free, run_red, run_wall, run_conf, run_realized = result
                             ticks.append(run_ticks)
                             free.append(run_free)
                             redundancy.append(run_red)
                             wall_bumps.append(run_wall)
                             conflicts.append(run_conf)
+                            realized.append(run_realized)
                     avg_ticks = sum(ticks) / len(ticks) if ticks else float("inf")
                     avg_free = sum(free) / len(free) if free else 0.0
                     ticks_per_cell = avg_ticks / avg_free if avg_free else float("inf")
                     avg_red = sum(redundancy) / len(redundancy) if redundancy else 0.0
                     avg_wall = sum(wall_bumps) / len(wall_bumps) if wall_bumps else 0.0
                     avg_conf = sum(conflicts) / len(conflicts) if conflicts else 0.0
+                    avg_realized = sum(realized) / len(realized) if realized else float("nan")
                     results[move_func][density][n] = {
                         "avg_ticks": avg_ticks,
                         "avg_free_cells": avg_free,
@@ -141,11 +148,17 @@ class Runner:
                         "redundancy": avg_red,
                         "wall_bumps": avg_wall,
                         "conflicts": avg_conf,
+                        # Requested vs realized obstacle density are distinct:
+                        # the sweep asked for `density`, but pruning to the
+                        # largest free component changes the density actually run.
+                        "requested_density": density,
+                        "realized_density": avg_realized,
                         "completed": len(ticks),
                         "runs": runs,
                     }
                     print(
-                        f"{move_func} @ density {density}, n={n}: "
+                        f"{move_func} @ density {density} "
+                        f"(realized {avg_realized:.3f}), n={n}: "
                         f"avg {avg_ticks:.1f} ticks over "
                         f"{len(ticks)}/{runs} completed runs, "
                         f"avg {avg_free:.1f} free cells, "
@@ -212,7 +225,12 @@ def log_results(
             entries.append((density, n, policy, metrics))
             with open(os.path.join(map_dir, f"policy_{policy}.log"), "w") as f:
                 f.write(f"policy: {policy}\n")
-                f.write(f"map: {width}x{height}, obstacle_density={density}, robots={n}\n")
+                f.write(
+                    f"map: {width}x{height}, "
+                    f"requested_obstacle_density={density}, "
+                    f"realized_obstacle_density={metrics.get('realized_density', float('nan')):.4f}, "
+                    f"robots={n}\n"
+                )
                 f.write(f"avg_ticks: {metrics['avg_ticks']:.2f}\n")
                 f.write(f"avg_free_cells: {metrics['avg_free_cells']:.2f}\n")
                 f.write(f"ticks_per_cell: {metrics['ticks_per_cell']:.4f}\n")

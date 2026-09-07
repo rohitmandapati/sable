@@ -10,6 +10,13 @@ from actions import Action
 from comms import Cell, CommsChannel, LinkModel
 from map import Map
 from robot import KNOWN_FREE, Position, Robot
+from seeding import (
+    EpisodeSeeds,
+    derive_episode_seeds,
+    validate_attempts,
+    validate_dimension,
+    validate_fraction,
+)
 
 from pettingzoo.utils.env import ParallelEnv
 
@@ -97,21 +104,30 @@ class Environment(ParallelEnv):
         obstacle_density: float = 0.2,
         min_free_fraction: float = 0.3,
         max_ticks: int = 100_000,
+        max_generation_attempts: int = 100,
+        map_name: str | None = None,
         enable_comms: bool = False,
         comms_drop_prob: float = 0.0,
         comms_max_bytes_per_tick: int | None = None,
         comms_seed: int | None = None,
     ) -> None:
-        self.width = width
-        self.height = height
+        # Validate world inputs up front (Map re-validates at generation time).
+        self.width = validate_dimension("width", width)
+        self.height = validate_dimension("height", height)
+        self.obstacle_density = validate_fraction("obstacle_density", obstacle_density)
+        self.min_free_fraction = validate_fraction("min_free_fraction", min_free_fraction)
+        self.max_generation_attempts = validate_attempts(
+            "max_generation_attempts", max_generation_attempts
+        )
         self.robot_ids: list[str] = list(robot_ids)
         if not self.robot_ids:
             raise ValueError("Environment needs at least one robot id")
         if len(set(self.robot_ids)) != len(self.robot_ids):
             raise ValueError("robot ids must be unique")
-        self.obstacle_density = obstacle_density
-        self.min_free_fraction = min_free_fraction
         self.max_ticks = max_ticks
+        # Default named map (an explicit selection path, never the PettingZoo
+        # seed); reset(options={"map": ...}) can override it per episode.
+        self.map_name = map_name
 
         # Comms (off by default so the classical baseline is untouched). When on,
         # robots broadcast newly-sensed cells each tick; received cells fill
@@ -120,6 +136,8 @@ class Environment(ParallelEnv):
         self.enable_comms = enable_comms
         self.comms_drop_prob = comms_drop_prob
         self.comms_max_bytes_per_tick = comms_max_bytes_per_tick
+        # An explicit comms seed pins that one stream regardless of the episode
+        # root (so a caller can hold the map fixed while varying network loss).
         self.comms_seed = comms_seed
         self.comms: CommsChannel | None = None
 
@@ -128,6 +146,13 @@ class Environment(ParallelEnv):
         self.tick_count = 0
         self.possible_agents = list(self.robot_ids)
         self.agents = [] # starts empty, might change now or change later during reset
+
+        # Per-episode seed manifest (filled in reset), plus the independent
+        # streams the environment itself owns.
+        self.seeds: EpisodeSeeds | None = None
+        self.active_map_name: str | None = None
+        self._spawn_rng: np.random.Generator | None = None
+        self._dynamics_rng: np.random.Generator | None = None
 
         # Cumulative movement-outcome counters for the episode, so the runner can
         # report friction the physics can't hide: actions rejected by a wall or
@@ -156,24 +181,57 @@ class Environment(ParallelEnv):
     # -- lifecycle -----------------------------------------------------------
 
     def reset(self, seed=None, options=None):
-        # Build a fresh world for seed, spawn robots, sense, return observations.
-        self.map = Map(
-            width=self.width,
-            height=self.height,
-            seed=seed,
-            obstacle_density=self.obstacle_density,
-            min_free_fraction=self.min_free_fraction,
-        )
+        # Build a fresh world for the episode, spawn robots, sense, return
+        # observations. `seed` is the *root* episode seed (int or None); it is
+        # split into independent map/spawn/dynamics/comms/policy streams. Named
+        # default maps are chosen via options["map"] or the constructor's
+        # map_name -- never by overloading `seed`.
+        options = options or {}
+
+        # Independent stream seeds. Per-stream overrides (constructor comms_seed
+        # or options["seeds"]) let a caller hold the map fixed while varying,
+        # e.g., spawn or network seeds.
+        overrides: dict[str, int] = {}
+        if self.comms_seed is not None:
+            overrides["comms"] = self.comms_seed
+        overrides.update(options.get("seeds", {}))
+        self.seeds = derive_episode_seeds(seed, overrides=overrides)
+
+        map_name = options.get("map", self.map_name)
+        self.active_map_name = map_name
+        if map_name is not None:
+            # A named map establishes its own dimensions; validate they match the
+            # environment the robots/spaces were configured for.
+            self.map = Map(width=self.width, height=self.height, name=map_name)
+            if self.map.grid.shape != (self.height, self.width):
+                raise ValueError(
+                    f"named map {map_name!r} is {self.map.grid.shape} but the "
+                    f"environment is {(self.height, self.width)}; construct the "
+                    f"Environment with matching width/height"
+                )
+        else:
+            self.map = Map(
+                width=self.width,
+                height=self.height,
+                seed=self.seeds.map,
+                obstacle_density=self.obstacle_density,
+                min_free_fraction=self.min_free_fraction,
+                max_generation_attempts=self.max_generation_attempts,
+            )
+
         self.wall_bumps = 0
         self.conflicts = 0
 
-        # Fresh comms channel per episode. The link RNG is seeded from an explicit
-        # comms_seed when given, else the episode seed, so runs reproduce.
+        # Independent RNG streams the environment owns
+        self._spawn_rng = np.random.default_rng(self.seeds.spawn)
+        self._dynamics_rng = np.random.default_rng(self.seeds.dynamics)
+
+        # Fresh comms channel per episode, on its own seeded stream.
         if self.enable_comms:
             link = LinkModel(
                 drop_prob=self.comms_drop_prob,
                 max_bytes_per_tick=self.comms_max_bytes_per_tick,
-                seed=self.comms_seed if self.comms_seed is not None else seed,
+                seed=self.seeds.comms,
             )
             self.comms = CommsChannel(link)
         else:
@@ -183,10 +241,9 @@ class Environment(ParallelEnv):
         if len(free_cells) < len(self.robot_ids):
             raise ValueError("Not enough free cells to spawn all robots")
 
-        # Spawn from the map's own rng stream (same draw the pre-refactor code
-        # used, so single-robot spawns are unchanged). Fully separating the
-        # spawn rng from map generation is deferred; see project notes.
-        indices = self.map.rng.choice(
+        # Spawn placement draws from its own stream, independent of map
+        # generation, so the same map can be re-used with different spawns.
+        indices = self._spawn_rng.choice(
             len(free_cells), size=len(self.robot_ids), replace=False
         )
         map_shape = (self.height, self.width)
@@ -202,6 +259,25 @@ class Environment(ParallelEnv):
         observations = self._observations()
         infos = {rid: {} for rid in self.agents}
         return observations, infos
+
+    def episode_manifest(self) -> dict[str, object]:
+        # Everything needed to replay the current episode.
+
+        if self.seeds is None:
+            raise RuntimeError("call reset() before episode_manifest()")
+        return {
+            "seeds": self.seeds.as_dict(),
+            "map_name": self.active_map_name,
+            "width": self.width,
+            "height": self.height,
+            "robot_ids": list(self.robot_ids),
+            "requested_obstacle_density": (
+                None if self.map is None else self.map.requested_obstacle_density
+            ),
+            "realized_obstacle_density": (
+                None if self.map is None else self.map.realized_obstacle_density
+            ),
+        }
 
     def step(self, actions: Mapping[str, object]) -> tuple[dict[str, dict[str, np.ndarray]], dict[str, Reward], bool, bool, Info]:
         if self.map is None:
