@@ -9,7 +9,6 @@ import numpy as np
 from actions import Action
 from comms import Cell, CommsChannel, LinkModel
 from map import Map
-from observations import RobotObservation
 from robot import KNOWN_FREE, Position, Robot
 
 from pettingzoo.utils.env import ParallelEnv
@@ -21,21 +20,70 @@ from pettingzoo.utils.env import ParallelEnv
 # Sensor footprint: the robot's own cell plus its four orthogonal neighbors.
 _SENSOR_OFFSETS: tuple[Position, ...] = ((0, 0), (-1, 0), (1, 0), (0, -1), (0, 1))
 
-# Consecutive contested ticks a cell tolerates before randomized tie-breaking
-# kicks in. After more than this many ticks of robots racing the same empty
-# cell, one contender is chosen at random to proceed so the team can't livelock.
-_CONTENTION_LIMIT = 2
-
-# Stochastic backtracking: a robot that wanted to move but was held in place for
-# more than this many consecutive ticks will, with probability _BACKTRACK_PROB,
-# take a random legal step instead of its policy move. This perturbs a robot out
-# of a standoff that tie-breaking alone can't resolve -- e.g. a robot endlessly
-# re-targeting a cell it keeps losing and oscillating in place.
-_BACKTRACK_LIMIT = 2
-_BACKTRACK_PROB = 0.5
-
 Reward = int
 Info = dict[str, object]
+
+
+def resolve_moves(
+    current: Mapping[str, Position],
+    desired: Mapping[str, Position],
+) -> tuple[dict[str, Position], set[str]]:
+    """Resolve simultaneous one-step moves into unique, collision-free targets.
+
+    Semantics are deterministic and independent of iteration order:
+
+    * A robot requesting its own cell stays.
+    * If two or more robots request the same destination, *all* of them are
+      rejected (they stay) -- a destination is never shared.
+    * A robot may move only if its destination is empty, or is vacated this tick
+      by another robot that itself successfully moves. A chain of robots shifting
+      into cells simultaneously vacated therefore succeeds only when it
+      terminates in a genuinely empty cell; a chain terminating at a stationary
+      or blocked robot is rejected backward along its whole length.
+    * Cycles never reach an empty cell, so every cycle is rejected. This subsumes
+      direct two-robot swaps (a 2-cycle) and larger rotations.
+
+    Cells left in place by a wall / out-of-bounds request already arrive here as
+    ``desired == current`` (the caller validates targets first), so they are not
+    treated as movement.
+
+    Returns ``(final, conflicted)`` where ``final`` maps each robot to a unique,
+    free cell and ``conflicted`` is the set of robots that *wanted* to move
+    (``desired != current``) but were held in place by a conflict.
+    """
+    ids = list(desired)
+    # Which robot currently sits on each cell (its potential vacancy this tick).
+    occupant = {current[r]: r for r in ids}
+
+    movers = {r for r in ids if desired[r] != current[r]}
+
+    # Same-destination contention: reject every robot targeting a shared cell.
+    per_target: dict[Position, list[str]] = defaultdict(list)
+    for r in movers:
+        per_target[desired[r]].append(r)
+    contested = {r for rs in per_target.values() if len(rs) > 1 for r in rs}
+    candidates = movers - contested
+
+    # A candidate can move iff its destination is empty or its destination's
+    # occupant is itself a moving candidate. Grow ``valid`` from candidates whose
+    # destination is already empty, propagating along vacated chains. The step is
+    # monotone (``valid`` only grows) so the fixpoint -- and thus the result --
+    # is the same regardless of the order robots are visited in.
+    valid: set[str] = set()
+    changed = True
+    while changed:
+        changed = False
+        for r in candidates:
+            if r in valid:
+                continue
+            occ = occupant.get(desired[r])
+            if occ is None or occ in valid:
+                valid.add(r)
+                changed = True
+
+    final = {r: (desired[r] if r in valid else current[r]) for r in ids}
+    conflicted = movers - valid
+    return final, conflicted
 
 class Environment(ParallelEnv):
     
@@ -81,14 +129,11 @@ class Environment(ParallelEnv):
         self.possible_agents = list(self.robot_ids)
         self.agents = [] # starts empty, might change now or change later during reset
 
-        # Randomized tie-breaking state (set up per-episode in reset):
-        # a dedicated RNG so collision draws are reproducible and independent of
-        # the map stream, plus a per-cell counter of consecutive contested ticks.
-        self._rng: np.random.Generator | None = None
-        self._contention: dict[Position, int] = {}
-        # Per-robot consecutive "blocked" tick counter, drives stochastic
-        # backtracking (see _BACKTRACK_LIMIT).
-        self._stuck: dict[str, int] = {}
+        # Cumulative movement-outcome counters for the episode, so the runner can
+        # report friction the physics can't hide: actions rejected by a wall or
+        # the map edge, and moves held in place by robot-robot conflicts.
+        self.wall_bumps = 0
+        self.conflicts = 0
 
     @functools.lru_cache(maxsize=None)
     def action_space(self, agent):
@@ -96,8 +141,15 @@ class Environment(ParallelEnv):
     
     @functools.lru_cache(maxsize=None)
     def observation_space(self, agent):
+        # Position is (row, col): row is bounded by height, column by width, so
+        # the two coordinates get independent per-axis bounds (not a shared max).
         return Dict({
-            "position":   Box(0, max(self.height, self.width), (2,), dtype=np.int64),
+            "position":   Box(
+                low=np.array([0, 0], dtype=np.int64),
+                high=np.array([self.height - 1, self.width - 1], dtype=np.int64),
+                shape=(2,),
+                dtype=np.int64,
+            ),
             "belief_map": Box(-1, 1, (self.height, self.width), dtype=np.int8),
         })
 
@@ -112,11 +164,8 @@ class Environment(ParallelEnv):
             obstacle_density=self.obstacle_density,
             min_free_fraction=self.min_free_fraction,
         )
-        # Tie-break RNG is seeded from the episode seed (independent of the map's
-        # own stream) so collision resolution is reproducible per run.
-        self._rng = np.random.default_rng(seed)
-        self._contention = {}
-        self._stuck = {}
+        self.wall_bumps = 0
+        self.conflicts = 0
 
         # Fresh comms channel per episode. The link RNG is seeded from an explicit
         # comms_seed when given, else the episode seed, so runs reproduce.
@@ -154,31 +203,32 @@ class Environment(ParallelEnv):
         infos = {rid: {} for rid in self.agents}
         return observations, infos
 
-    def step(self, actions: Mapping[str, object]) -> tuple[dict[str, RobotObservation], dict[str, Reward], bool, bool, Info]:
+    def step(self, actions: Mapping[str, object]) -> tuple[dict[str, dict[str, np.ndarray]], dict[str, Reward], bool, bool, Info]:
         if self.map is None:
             raise RuntimeError("call reset() before step()")
 
         self.tick_count += 1
 
-        # Validate each alive robot's action into a target cell
+        # Validate each alive robot's action into a target cell. A move rejected
+        # by a wall or the map edge collapses to "stay" here (target == pos); we
+        # record it as a wall bump so the friction is observable.
+        current: dict[str, Position] = {}
         desired: dict[str, Position] = {}
+        wall_blocked: set[str] = set()
         for rid, robot in self.robots.items():
             if not robot.alive:
                 continue
+            current[rid] = robot.pos
             action = Action.coerce(actions.get(rid)) or Action.STAY
             target = self._validated_target(robot, action)
-            if (
-                self._stuck.get(rid, 0) > _BACKTRACK_LIMIT
-                and self._rng.random() < _BACKTRACK_PROB
-            ):
-                target = self._random_step_target(robot)
+            if action is not Action.STAY and target == robot.pos:
+                wall_blocked.add(rid)
             desired[rid] = target
 
-        # Positions before movement, needed to tell whether a robot was blocked.
-        before: dict[str, Position] = {rid: self.robots[rid].pos for rid in desired}
-
-        # Resolve simultaneous movement (single robot: no-op)
-        resolved = self._resolve_collisions(desired)
+        # Resolve simultaneous movement into unique, free cells (single robot:
+        # no-op). ``conflicted`` are robots whose requested move lost to a
+        # robot-robot conflict (same target, swap/cycle, or a blocked chain).
+        resolved, conflicted = resolve_moves(current, desired)
 
         # Apply moves and sense, set_position appends to the trajectory every
         # tick
@@ -197,13 +247,8 @@ class Environment(ParallelEnv):
         if self.comms is not None:
             self._exchange_comms(sensed_cells)
 
-        # A robot that wanted to move but stayed put was blocked; track the run
-        # of consecutive blocked ticks so backtracking can trigger.
-        for rid in desired:
-            if desired[rid] != before[rid] and resolved[rid] == before[rid]:
-                self._stuck[rid] = self._stuck.get(rid, 0) + 1
-            else:
-                self._stuck[rid] = 0
+        self.wall_bumps += len(wall_blocked)
+        self.conflicts += len(conflicted)
 
         raw = self._observations()
         terminated = self.coverage_complete()
@@ -212,8 +257,14 @@ class Environment(ParallelEnv):
         rewards = {rid: float(newly.get(rid, 0)) for rid in self.agents}
         terminations = {rid: terminated for rid in self.agents}
         truncations = {rid: truncated for rid in self.agents}
-        infos = {rid: {} for rid in self.agents}
-        
+        infos = {
+            rid: {
+                "wall_blocked": rid in wall_blocked,
+                "blocked": rid in conflicted,
+            }
+            for rid in self.agents
+        }
+
         self.agents = [rid for rid in self.agents if not (terminations[rid] or truncations[rid])]
         return observations, rewards, terminations, truncations, infos
 
@@ -240,9 +291,19 @@ class Environment(ParallelEnv):
 
     # -- internals -----------------------------------------------------------
 
-    def _observations(self) -> dict[str, RobotObservation]:
+    def _observation(self, robot: Robot) -> dict[str, np.ndarray]:
+        # A Gym-dict observation matching observation_space(agent). Arrays are
+        # fresh copies, so each returned observation is a self-owned snapshot:
+        # later mutation of the robot never changes an observation already handed
+        # out. Policies read these only through the RobotObservation adapter.
         return {
-            rid: RobotObservation.from_robot(robot)
+            "position": np.array(robot.pos, dtype=np.int64),
+            "belief_map": robot.belief_map.astype(np.int8, copy=True),
+        }
+
+    def _observations(self) -> dict[str, dict[str, np.ndarray]]:
+        return {
+            rid: self._observation(robot)
             for rid, robot in self.robots.items()
         }
 
@@ -256,82 +317,6 @@ class Environment(ParallelEnv):
         if self.map.grid[nr, nc] == 1:
             return robot.pos  # walk into a wall -> stay
         return (nr, nc)
-
-    def _random_step_target(self, robot: Robot) -> Position:
-        # A uniformly random in-bounds, non-wall neighbour (or stay if boxed in).
-        # Collision resolution still applies, so this move is not privileged.
-        assert self.map is not None and self._rng is not None
-        r, c = robot.pos
-        candidates = [
-            (r + dr, c + dc)
-            for dr, dc in ((-1, 0), (1, 0), (0, -1), (0, 1))
-            if 0 <= r + dr < self.height
-            and 0 <= c + dc < self.width
-            and self.map.grid[r + dr, c + dc] == 0
-        ]
-        if not candidates:
-            return robot.pos
-        return candidates[int(self._rng.integers(len(candidates)))]
-
-    def _resolve_collisions(
-        self, desired: dict[str, Position]
-    ) -> dict[str, Position]:
-        
-        current = {rid: self.robots[rid].pos for rid in desired}
-        final = dict(desired)
-
-        occupancy: dict[Position, list[str]] = defaultdict(list)
-        for rid, target in desired.items():
-            occupancy[target].append(rid)
-
-        contested_now: set[Position] = set()
-        for target, rids in occupancy.items():
-            if len(rids) <= 1:
-                continue
-
-            # A robot already sitting on the target cell holds it; nobody may
-            # move in on top of it (that would put two robots on one cell), so
-            # the others just stay and re-route next tick (not a race)
-            if any(current[rid] == target for rid in rids):
-                for rid in rids:
-                    if current[rid] != target:
-                        final[rid] = current[rid]
-                continue
-
-            # every contender is moving into a currently-empty cell.
-            # Count consecutive contested ticks; once it exceeds the limit,
-            # pick one contender at random to proceed and hold the rest. Below
-            # the limit, keep the conservative "everyone stays" rule.
-            contested_now.add(target)
-            self._contention[target] = self._contention.get(target, 0) + 1
-            if self._contention[target] > _CONTENTION_LIMIT:
-                assert self._rng is not None  # set in reset()
-                # Sorted candidates keep the draw reproducible; which robot is
-                # favoured is a policy knob we may learn/optimize later.
-                winner = str(self._rng.choice(sorted(rids)))
-                for rid in rids:
-                    if rid != winner:
-                        final[rid] = current[rid]
-            else:
-                for rid in rids:
-                    final[rid] = current[rid]
-
-        # Forget cells that were not contested this tick so the counter only
-        # tracks *consecutive* standoffs.
-        for target in [t for t in self._contention if t not in contested_now]:
-            del self._contention[target]
-
-        ids = sorted(desired)
-        for i, a in enumerate(ids):
-            for b in ids[i + 1 :]:
-                if (
-                    current[a] != current[b]
-                    and final[a] == current[b]
-                    and final[b] == current[a]
-                ):
-                    final[a] = current[a]
-                    final[b] = current[b]
-        return final
 
     def _sense(self, robot: Robot) -> list[Cell]:
         """Reveal ground truth in the sensor footprint; return newly-revealed cells.

@@ -53,9 +53,9 @@ class Runner:
 
     def _run_once(
         self, move_func: str, seed: int, density: float, n: int
-    ) -> tuple[int, int, float] | None:
-        # Returns (ticks, free_cells, redundancy) for a completed run, or None on
-        # timeout
+    ) -> tuple[int, int, float, int, int] | None:
+        # Returns (ticks, free_cells, redundancy, wall_bumps, conflicts) for a
+        # completed run, or None on timeout.
         robot_ids = [f"r{i}" for i in range(n)]
         env = Environment(
             width=self.width,
@@ -91,7 +91,13 @@ class Runner:
         truncated = env.tick_count >= self.max_ticks and not env.coverage_complete()
         if truncated:
             return None
-        return env.tick_count, free_cells, env.sensing_redundancy()
+        return (
+            env.tick_count,
+            free_cells,
+            env.sensing_redundancy(),
+            env.wall_bumps,
+            env.conflicts,
+        )
 
     def run(
         self,
@@ -108,25 +114,33 @@ class Runner:
                     ticks: list[int] = []
                     free: list[int] = []
                     redundancy: list[float] = []
+                    wall_bumps: list[int] = []
+                    conflicts: list[int] = []
                     runs = 0
                     # Reuse the same trials for each policy / robot count.
                     for seed in trial_seeds:
                         runs += 1
                         result = self._run_once(move_func, seed, density, n)
                         if result is not None:
-                            run_ticks, run_free, run_red = result
+                            run_ticks, run_free, run_red, run_wall, run_conf = result
                             ticks.append(run_ticks)
                             free.append(run_free)
                             redundancy.append(run_red)
+                            wall_bumps.append(run_wall)
+                            conflicts.append(run_conf)
                     avg_ticks = sum(ticks) / len(ticks) if ticks else float("inf")
                     avg_free = sum(free) / len(free) if free else 0.0
                     ticks_per_cell = avg_ticks / avg_free if avg_free else float("inf")
                     avg_red = sum(redundancy) / len(redundancy) if redundancy else 0.0
+                    avg_wall = sum(wall_bumps) / len(wall_bumps) if wall_bumps else 0.0
+                    avg_conf = sum(conflicts) / len(conflicts) if conflicts else 0.0
                     results[move_func][density][n] = {
                         "avg_ticks": avg_ticks,
                         "avg_free_cells": avg_free,
                         "ticks_per_cell": ticks_per_cell,
                         "redundancy": avg_red,
+                        "wall_bumps": avg_wall,
+                        "conflicts": avg_conf,
                         "completed": len(ticks),
                         "runs": runs,
                     }
@@ -136,7 +150,8 @@ class Runner:
                         f"{len(ticks)}/{runs} completed runs, "
                         f"avg {avg_free:.1f} free cells, "
                         f"{ticks_per_cell:.2f} ticks/cell, "
-                        f"redundancy {avg_red:.3f}"
+                        f"redundancy {avg_red:.3f}, "
+                        f"wall_bumps {avg_wall:.1f}, conflicts {avg_conf:.1f}"
                     )
 
         # Speedup vs the single-robot run of the same policy+density. Computed
@@ -202,6 +217,8 @@ def log_results(
                 f.write(f"avg_free_cells: {metrics['avg_free_cells']:.2f}\n")
                 f.write(f"ticks_per_cell: {metrics['ticks_per_cell']:.4f}\n")
                 f.write(f"redundancy: {metrics['redundancy']:.4f}\n")
+                f.write(f"wall_bumps: {metrics.get('wall_bumps', 0.0):.2f}\n")
+                f.write(f"conflicts: {metrics.get('conflicts', 0.0):.2f}\n")
                 f.write(f"speedup_vs_1: {metrics.get('speedup', float('nan')):.4f}\n")
                 f.write(
                     f"completed_runs: {metrics.get('completed', '?')}/{metrics.get('runs', '?')}\n"

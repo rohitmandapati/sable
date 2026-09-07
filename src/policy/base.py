@@ -1,7 +1,7 @@
 
 from __future__ import annotations
 
-from typing import Callable, Protocol, runtime_checkable
+from typing import Callable, Mapping, Protocol, Union, runtime_checkable
 
 import numpy as np
 
@@ -9,13 +9,14 @@ from actions import Action
 from observations import RobotObservation
 
 PolicyFn = Callable[[RobotObservation, np.random.Generator], Action]
+Observation = Union[RobotObservation, Mapping[str, np.ndarray]]
 
 
 @runtime_checkable
 class Policy(Protocol):
     def act(
         self,
-        observation: RobotObservation,
+        observation: Observation,
         rng: np.random.Generator,
     ) -> Action:
         ...
@@ -30,9 +31,13 @@ class FunctionPolicy:
 
     def act(
         self,
-        observation: RobotObservation,
+        observation: Observation,
         rng: np.random.Generator,
     ) -> Action:
+        # The environment returns Gym-dict observations; wrap them at the policy
+        # boundary so classical policies keep their ergonomic attribute access.
+        if not isinstance(observation, RobotObservation):
+            observation = RobotObservation.from_obs(observation)
         return self._fn(observation, rng)
 
     def __repr__(self) -> str:  # pragma: no cover - cosmetic
