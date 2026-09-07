@@ -156,9 +156,11 @@ class Environment(ParallelEnv):
 
         # Cumulative movement-outcome counters for the episode, so the runner can
         # report friction the physics can't hide: actions rejected by a wall or
-        # the map edge, and moves held in place by robot-robot conflicts.
+        # the map edge, moves held in place by robot-robot conflicts, and moves
+        # that actually changed a robot's cell.
         self.wall_bumps = 0
         self.conflicts = 0
+        self.successful_moves = 0
 
     @functools.lru_cache(maxsize=None)
     def action_space(self, agent):
@@ -221,6 +223,7 @@ class Environment(ParallelEnv):
 
         self.wall_bumps = 0
         self.conflicts = 0
+        self.successful_moves = 0
 
         # Independent RNG streams the environment owns
         self._spawn_rng = np.random.default_rng(self.seeds.spawn)
@@ -325,6 +328,10 @@ class Environment(ParallelEnv):
 
         self.wall_bumps += len(wall_blocked)
         self.conflicts += len(conflicted)
+        # A successful move is a robot that actually changed cell this tick.
+        self.successful_moves += sum(
+            1 for rid in resolved if resolved[rid] != current[rid]
+        )
 
         raw = self._observations()
         terminated = self.coverage_complete()

@@ -6,13 +6,7 @@
 # would silently perturb spawns and comms. We derive each stream from a single
 # root episode seed with numpy's SeedSequence, which is designed exactly for
 # splitting one seed into statistically-independent child streams.
-#
-# Two properties matter and are tested:
-#   * Reproducibility -- a given root reproduces every stream, and even a
-#     root=None ("pick entropy for me") episode is replayable because we record
-#     the concrete entropy that was drawn.
-#   * Decoupling -- a caller can override one stream (e.g. spawn) while holding
-#     the rest (e.g. map) fixed, so "same map, different spawns" is expressible.
+
 
 from __future__ import annotations
 
@@ -27,13 +21,6 @@ STREAM_NAMES: tuple[str, ...] = ("map", "spawn", "dynamics", "comms", "policy")
 
 @dataclass(frozen=True)
 class EpisodeSeeds:
-    """Concrete integer seed for each subsystem stream of one episode.
-
-    ``root`` is the resolved episode entropy (never None, even when the episode
-    was launched with ``seed=None``), so storing this manifest is sufficient to
-    replay the whole episode.
-    """
-
     root: int
     map: int
     spawn: int
@@ -50,13 +37,6 @@ def derive_episode_seeds(
     *,
     overrides: dict[str, int] | None = None,
 ) -> EpisodeSeeds:
-    """Split a root episode seed into one independent seed per subsystem.
-
-    ``root=None`` draws fresh OS entropy; the drawn value is captured in the
-    returned manifest so the episode stays replayable. ``overrides`` pins
-    specific streams by name (e.g. ``{"spawn": 7}``) so one stream can vary while
-    the others are held fixed; unknown stream names raise.
-    """
     seq = np.random.SeedSequence(root)
     # SeedSequence.entropy is the int we passed, or the freshly-drawn entropy
     # when root was None. Recording it makes a seed=None episode reproducible.

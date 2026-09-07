@@ -29,9 +29,11 @@ class CommsChannel:
         self._tick: int | None = None
         self._tick_bytes: dict[str, int] = defaultdict(int)
 
-        # Cumulative transport stats (a future comms metric reads these).
+        # Cumulative transport stats (the runner reads these). Each counts
+        # per-recipient delivery attempts, so attempted = delivered + dropped.
         self.bytes_delivered = 0
         self.bytes_dropped = 0
+        self.messages_delivered = 0
         self.messages_dropped = 0
 
     def reset(self, seed: int | None = None) -> None:
@@ -41,6 +43,7 @@ class CommsChannel:
         self._tick_bytes = defaultdict(int)
         self.bytes_delivered = 0
         self.bytes_dropped = 0
+        self.messages_delivered = 0
         self.messages_dropped = 0
         self._link.reset(seed)
 
@@ -83,6 +86,7 @@ class CommsChannel:
             self._inboxes[rid].append(message)
             self._tick_bytes[rid] += message.size_bytes
             self.bytes_delivered += message.size_bytes
+            self.messages_delivered += 1
         return message
 
     def receive(self, robot_id: str) -> list[Message]:

@@ -45,12 +45,24 @@ def test_retry_does_not_mutate_configured_seed_or_attempts():
 
 
 def test_dense_map_generates_without_crashing():
-    # Dense + seed=None is the exact combination that used to crash. It must
-    # either produce a valid map or raise MapGenerationError -- never TypeError.
-    m = Map(width=24, height=24, seed=None, obstacle_density=0.6,
+    # A feasible dense map with seed=None must generate a valid grid (this path
+    # used to crash on the retry with `None += 1`).
+    m = Map(width=24, height=24, seed=None, obstacle_density=0.35,
             min_free_fraction=0.1)
     assert m.vacancies > 0
     assert float(np.mean(m.grid == 0)) >= 0.1
+
+
+def test_dense_seed_none_never_raises_typeerror():
+    # Near/above percolation the generator may legitimately exhaust -- that must
+    # surface as MapGenerationError, never the old None += 1 TypeError.
+    try:
+        Map(width=20, height=20, seed=None, obstacle_density=0.8,
+            min_free_fraction=0.3, max_generation_attempts=8)
+    except MapGenerationError:
+        pass
+    except TypeError as exc:  # pragma: no cover - regression guard
+        raise AssertionError(f"dense seed=None regressed to a TypeError: {exc}")
 
 
 def test_min_free_fraction_is_enforced():
