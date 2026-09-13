@@ -193,10 +193,10 @@ class Runner:
         completed = env.coverage_complete()
         ch = env.comms
         comms_on = ch is not None
-        msgs_delivered = ch.messages_delivered if comms_on else 0
-        msgs_dropped = ch.messages_dropped if comms_on else 0
-        bytes_delivered = ch.bytes_delivered if comms_on else 0
-        bytes_dropped = ch.bytes_dropped if comms_on else 0
+        msgs_delivered = ch.deliveries_made if comms_on else 0
+        msgs_dropped = ch.deliveries_dropped if comms_on else 0
+        bytes_delivered = ch.payload_bytes_delivered if comms_on else 0
+        bytes_dropped = ch.payload_bytes_dropped if comms_on else 0
 
         return EpisodeRecord(
             policy=move_func,

@@ -256,8 +256,15 @@ class Environment(ParallelEnv):
             self.robots[rid] = Robot(robot_id=rid, pos=spawn, map_shape=map_shape)
 
         self.tick_count = 0
-        for robot in self.robots.values():
-            self._sense(robot)
+        # Initial sensing. Collect each robot's initial delta so it can be shared
+        # at tick 0 exactly like any later tick (same channel, packet-loss, and
+        # bandwidth rules); received cells enrich belief_map only, never
+        # sensed_mask.
+        sensed_cells: dict[str, list[Cell]] = {}
+        for rid, robot in self.robots.items():
+            sensed_cells[rid] = self._sense(robot)
+        if self.comms is not None:
+            self._exchange_comms(sensed_cells)
         self.agents = self.active_robot_ids()
         observations = self._observations()
         infos = {rid: {} for rid in self.agents}

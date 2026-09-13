@@ -97,10 +97,59 @@ def test_dropping_everything_matches_no_comms():
     env = _run_script(_env(enable_comms=True, drop_prob=1.0))
     for robot in env.robots.values():
         assert np.array_equal(_known(robot), robot.sensed_mask)  # nothing received
-    assert env.comms.bytes_delivered == 0
-    assert env.comms.messages_dropped > 0
+    assert env.comms.payload_bytes_delivered == 0
+    assert env.comms.deliveries_dropped > 0
 
 
 def test_bandwidth_and_delivery_stats_are_tracked():
     env = _run_script(_env(enable_comms=True))
-    assert env.comms.bytes_delivered > 0
+    assert env.comms.payload_bytes_delivered > 0
+
+
+# -- tick-zero (initial-sensing) sharing ---------------------------------------
+
+def test_tick_zero_no_comms_belief_equals_sensed():
+    # Baseline: with comms off, reset leaves belief == first-hand sensing.
+    env = _env(enable_comms=False)
+    env.reset(seed=0)  # no steps
+    for robot in env.robots.values():
+        assert np.array_equal(_known(robot), robot.sensed_mask)
+
+
+def test_tick_zero_sharing_enriches_belief_never_sensed_mask():
+    # With comms on, the initial deltas are exchanged at tick 0, so -- with no
+    # steps taken -- each robot already believes cells it never sensed itself.
+    env = _env(enable_comms=True)
+    env.reset(seed=0)  # no steps
+    found = False
+    for robot in env.robots.values():
+        received = _known(robot) & ~robot.sensed_mask
+        if received.any():
+            found = True
+            for r, c in np.argwhere(received):
+                assert robot.belief_map[r, c] == env.map.grid[r, c]  # correct
+                assert not robot.sensed_mask[r, c]  # never first-hand
+    assert found  # two distinct spawns must exchange at least one cell at tick 0
+    assert env.comms.payload_bytes_transmitted > 0
+    assert env.comms.payload_bytes_delivered > 0
+
+
+def test_tick_zero_total_loss_delivers_nothing():
+    env = _env(enable_comms=True, drop_prob=1.0)
+    env.reset(seed=0)  # no steps
+    for robot in env.robots.values():
+        assert np.array_equal(_known(robot), robot.sensed_mask)  # nothing received
+    assert env.comms.payload_bytes_transmitted > 0  # the tick-0 broadcast happened
+    assert env.comms.payload_bytes_delivered == 0
+    assert env.comms.deliveries_dropped > 0
+
+
+def test_tick_zero_bandwidth_rejection_delivers_nothing():
+    # A zero per-recipient budget rejects every tick-0 delivery at the cap.
+    env = _env(enable_comms=True, max_bytes=0)
+    env.reset(seed=0)  # no steps
+    for robot in env.robots.values():
+        assert np.array_equal(_known(robot), robot.sensed_mask)
+    assert env.comms.payload_bytes_transmitted > 0
+    assert env.comms.payload_bytes_delivered == 0
+    assert env.comms.deliveries_dropped > 0

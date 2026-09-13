@@ -1,9 +1,12 @@
 # A minimal in-memory message channel with a pluggable transport policy.
 #
-# Delivery is still immediate (same tick). A LinkModel decides *whether* each
-# message reaches each recipient: uniform Bernoulli drop plus a per-recipient,
-# per-tick bandwidth cap. A default LinkModel is a perfect (lossless, unlimited)
-# link, so callers that don't care about realism see the original behavior.
+# Delivery is still immediate (same tick) and all-to-all: a LinkModel decides
+# whether each message reaches each recipient via uniform Bernoulli drop plus a
+# per-recipient, per-tick bandwidth cap
+# 
+# A default LinkModel is a perfect
+# (lossless, unlimited) link, so callers that don't care about realism see the
+# original behavior.
 #
 # TODO: distance/range-based loss, then latency (delivery-tick gating here).
 
@@ -25,26 +28,33 @@ class CommsChannel:
 
         # Per-recipient bytes delivered during the current tick, for the
         # bandwidth cap. Assumes ticks passed to send() are monotonic (the env
-        # drives them that way); a new tick resets the accounting.
+        # drives them that way); a new tick resets the accounting. 
+        # NOTE: max_bytes_per_tick is currently a per-recipient delivered-payload
+        # limit (it caps the belief-payload bytes each recipient accepts per
+        # tick), this is not a redesign of the bandwidth model.
         self._tick: int | None = None
         self._tick_bytes: dict[str, int] = defaultdict(int)
 
-        # Cumulative transport stats (the runner reads these). Each counts
-        # per-recipient delivery attempts, so attempted = delivered + dropped.
-        self.bytes_delivered = 0
-        self.bytes_dropped = 0
-        self.messages_delivered = 0
-        self.messages_dropped = 0
+        # Cumulative payload-only transport stats. Payload = the belief cells
+        # actually serialized on the wire (see Message); no metadata is counted.
+        #   transmitted: counted once per logical broadcast (one send()).
+        #   delivered/dropped: counted once per recipient outcome.
+        self.payload_bytes_transmitted = 0
+        self.payload_bytes_delivered = 0
+        self.payload_bytes_dropped = 0
+        self.deliveries_made = 0
+        self.deliveries_dropped = 0
 
     def reset(self, seed: int | None = None) -> None:
         self._inboxes = defaultdict(list)
         self._next_id = 0
         self._tick = None
         self._tick_bytes = defaultdict(int)
-        self.bytes_delivered = 0
-        self.bytes_dropped = 0
-        self.messages_delivered = 0
-        self.messages_dropped = 0
+        self.payload_bytes_transmitted = 0
+        self.payload_bytes_delivered = 0
+        self.payload_bytes_dropped = 0
+        self.deliveries_made = 0
+        self.deliveries_dropped = 0
         self._link.reset(seed)
 
     def send(
@@ -64,6 +74,10 @@ class CommsChannel:
             message_id=self._next_id,
         )
         self._next_id += 1
+        size = message.payload_size_bytes
+
+        # One logical broadcast, transmitted once regardless of recipient count.
+        self.payload_bytes_transmitted += size
 
         # A new tick resets the per-recipient bandwidth accounting.
         if tick != self._tick:
@@ -74,19 +88,19 @@ class CommsChannel:
         for rid in recipients:
             # Uniform random loss.
             if self._link.should_drop():
-                self.bytes_dropped += message.size_bytes
-                self.messages_dropped += 1
+                self.payload_bytes_dropped += size
+                self.deliveries_dropped += 1
                 continue
-            # Bandwidth cap: drop what doesn't fit this recipient's tick budget
-            # (no deferral -- latency is a later stage).
-            if cap is not None and self._tick_bytes[rid] + message.size_bytes > cap:
-                self.bytes_dropped += message.size_bytes
-                self.messages_dropped += 1
+            # Bandwidth cap: drop what doesn't fit this recipient's per-tick
+            # delivered-payload budget (no deferral -- latency is a later stage).
+            if cap is not None and self._tick_bytes[rid] + size > cap:
+                self.payload_bytes_dropped += size
+                self.deliveries_dropped += 1
                 continue
             self._inboxes[rid].append(message)
-            self._tick_bytes[rid] += message.size_bytes
-            self.bytes_delivered += message.size_bytes
-            self.messages_delivered += 1
+            self._tick_bytes[rid] += size
+            self.payload_bytes_delivered += size
+            self.deliveries_made += 1
         return message
 
     def receive(self, robot_id: str) -> list[Message]:
