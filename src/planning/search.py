@@ -101,6 +101,38 @@ def shortest_path_to_any_astar(
 
     return None
 
+def bfs_distance_field(
+    start: Cell,
+    belief_map: np.ndarray,
+    passable: Callable[[int], bool] | None = None,
+) -> dict[Cell, int]:
+    # Shortest-path distance (in steps) from start to every reachable cell.
+
+    # A single BFS over the belief map, so computing costs to many targets (e.g.
+    # every frontier) is one sweep per robot rather than one search per target.
+    # Only passable cells are recorded; start is distance 0 and assumed
+    # passable (a robot always stands on a free cell).
+  
+    if passable is None:
+        passable = _default_passable
+
+    shape = (int(belief_map.shape[0]), int(belief_map.shape[1]))
+    start = (int(start[0]), int(start[1]))
+
+    dist: dict[Cell, int] = {start: 0}
+    queue: deque[Cell] = deque([start])
+    while queue:
+        current = queue.popleft()
+        for nb in neighbors(current, shape):
+            if nb in dist:
+                continue
+            if not passable(int(belief_map[nb])):
+                continue
+            dist[nb] = dist[current] + 1
+            queue.append(nb)
+    return dist
+
+
 def _reconstruct(parent: dict[Cell, Cell | None], end: Cell) -> list[Cell]:
     path = [end]
     while parent[path[-1]] is not None:

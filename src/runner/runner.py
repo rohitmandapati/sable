@@ -183,10 +183,13 @@ class Runner:
 
         note_coverage(0)
         while env.agents:
-            actions = {
-                rid: policy.act(observations[rid], policy_rngs[rid])
-                for rid in env.agents
-            }
+            # Drive every policy through act_joint: independent policies map it
+            # over robots; coordinated policies use the whole team to assign
+            # distinct frontiers.
+            actions = policy.act_joint(
+                {rid: observations[rid] for rid in env.agents},
+                {rid: policy_rngs[rid] for rid in env.agents},
+            )
             observations, _r, _term, _trunc, _info = env.step(actions)
             note_coverage(env.tick_count)
 

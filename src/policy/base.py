@@ -21,6 +21,17 @@ class Policy(Protocol):
     ) -> Action:
         ...
 
+    def act_joint(
+        self,
+        observations: Mapping[str, Observation],
+        rngs: Mapping[str, np.random.Generator],
+    ) -> dict[str, Action]:
+        # Decide all robots' actions together. Independent policies just map
+        # `act` over each robot; coordinated policies (e.g. frontier assignment)
+        # use the whole set to hand out distinct targets. The runner always drives
+        # policies through this one entry point.
+        ...
+
 
 class FunctionPolicy:
     """Adapts a `(observation, rng) -> Action` function to the Policy protocol."""
@@ -39,6 +50,14 @@ class FunctionPolicy:
         if not isinstance(observation, RobotObservation):
             observation = RobotObservation.from_obs(observation)
         return self._fn(observation, rng)
+
+    def act_joint(
+        self,
+        observations: Mapping[str, Observation],
+        rngs: Mapping[str, np.random.Generator],
+    ) -> dict[str, Action]:
+        # No coordination: each robot decides from its own observation alone.
+        return {rid: self.act(observations[rid], rngs[rid]) for rid in observations}
 
     def __repr__(self) -> str:  # pragma: no cover - cosmetic
         return f"FunctionPolicy({self.name})"
