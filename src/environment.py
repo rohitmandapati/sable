@@ -7,7 +7,7 @@ from collections.abc import Iterable, Mapping
 import numpy as np
 
 from actions import Action
-from comms import Cell, CommsChannel, LinkModel
+from comms import Cell, CommsChannel, CommsConfig, LinkModel
 from map import Map
 from robot import KNOWN_FREE, Position, Robot
 from seeding import (
@@ -110,6 +110,7 @@ class Environment(ParallelEnv):
         comms_drop_prob: float = 0.0,
         comms_max_bytes_per_tick: int | None = None,
         comms_seed: int | None = None,
+        comms_config: CommsConfig | None = None,
     ) -> None:
         # Validate world inputs up front (Map re-validates at generation time).
         self.width = validate_dimension("width", width)
@@ -134,8 +135,17 @@ class Environment(ParallelEnv):
         # belief_map only (never sensed_mask), so physical-sensing redundancy
         # stays a true measure of duplicated exploration effort.
         self.enable_comms = enable_comms
-        self.comms_drop_prob = comms_drop_prob
-        self.comms_max_bytes_per_tick = comms_max_bytes_per_tick
+        # The channel is configured by a single CommsConfig. The scalar
+        # comms_drop_prob / comms_max_bytes_per_tick kwargs are a convenience shim
+        # (kept so existing callers, e.g. the Runner, are untouched); an explicit
+        # comms_config wins over them. Later stages add richer knobs to the config
+        # and callers pass one directly.
+        self.comms_config = comms_config or CommsConfig(
+            drop_prob=comms_drop_prob,
+            max_bytes_per_tick=comms_max_bytes_per_tick,
+        )
+        self.comms_drop_prob = self.comms_config.drop_prob
+        self.comms_max_bytes_per_tick = self.comms_config.max_bytes_per_tick
         # An explicit comms seed pins that one stream regardless of the episode
         # root (so a caller can hold the map fixed while varying network loss).
         self.comms_seed = comms_seed
@@ -229,12 +239,14 @@ class Environment(ParallelEnv):
         self._spawn_rng = np.random.default_rng(self.seeds.spawn)
         self._dynamics_rng = np.random.default_rng(self.seeds.dynamics)
 
-        # Fresh comms channel per episode, on its own seeded stream.
+        # Fresh comms channel per episode, on its own seeded stream. The link is
+        # given the ground-truth grid as env-side physics (used by distance /
+        # occlusion stages; never exposed to policies).
         if self.enable_comms:
             link = LinkModel(
-                drop_prob=self.comms_drop_prob,
-                max_bytes_per_tick=self.comms_max_bytes_per_tick,
+                self.comms_config,
                 seed=self.seeds.comms,
+                grid=self.map.grid,
             )
             self.comms = CommsChannel(link)
         else:
@@ -436,13 +448,16 @@ class Environment(ParallelEnv):
         # overwritten and the redundancy metric stays physical.
         assert self.comms is not None
         alive = self.active_robot_ids()
+        # Current positions, passed to the channel so distance-aware link stages
+        # can weigh each sender->recipient hop. The uniform stage ignores them.
+        positions = {rid: self.robots[rid].pos for rid in alive}
         for rid in alive:
             cells = tuple(sensed_cells.get(rid, ()))
             if not cells:
                 continue
             recipients = [other for other in alive if other != rid]
             if recipients:
-                self.comms.send(rid, cells, recipients, self.tick_count)
+                self.comms.send(rid, cells, recipients, self.tick_count, positions)
         for rid in alive:
             robot = self.robots[rid]
             for message in self.comms.receive(rid):

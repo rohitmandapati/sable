@@ -1,22 +1,22 @@
 # A minimal in-memory message channel with a pluggable transport policy.
 #
-# Delivery is still immediate (same tick) and all-to-all: a LinkModel decides
-# whether each message reaches each recipient via uniform Bernoulli drop plus a
-# per-recipient, per-tick bandwidth cap
-# 
-# A default LinkModel is a perfect
-# (lossless, unlimited) link, so callers that don't care about realism see the
-# original behavior.
+# Delivery is still immediate (same tick) and all-to-all: for each recipient the
+# channel asks its LinkModel `evaluate(query) -> outcome` (uniform Bernoulli drop
+# today) and then applies a per-recipient, per-tick bandwidth cap.
+#
+# A default LinkModel is a perfect (lossless, unlimited) link, so callers that
+# don't care about realism see the original behavior.
 #
 # TODO: distance/range-based loss, then latency (delivery-tick gating here).
 
 from __future__ import annotations
 
 from collections import defaultdict
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 
-from comms.link import LinkModel
+from comms.link import LinkModel, LinkQuery
 from comms.message import Cell, Message
+from robot import Position
 
 
 class CommsChannel:
@@ -63,10 +63,13 @@ class CommsChannel:
         cells: tuple[Cell, ...],
         recipients: Iterable[str],
         tick: int,
+        positions: Mapping[str, Position] | None = None,
     ) -> Message:
         # Queue a belief patch from sender_id for each recipient that the link
         # actually delivers to. Returns the constructed Message regardless of
         # per-recipient delivery (it exists on the wire even if it's dropped).
+        # `positions` (robot_id -> cell) is passed to the link for distance-aware
+        # stages; the uniform link ignores it.
         message = Message.from_belief_delta(
             sender_id=sender_id,
             cells=cells,
@@ -84,10 +87,23 @@ class CommsChannel:
             self._tick = tick
             self._tick_bytes = defaultdict(int)
 
+        pos = positions or {}
+        sender_pos = pos.get(sender_id)
         cap = self._link.max_bytes_per_tick
         for rid in recipients:
-            # Uniform random loss.
-            if self._link.should_drop():
+            # Transport decision (uniform random loss today). Evaluated per
+            # recipient, before the bandwidth check, exactly as before.
+            outcome = self._link.evaluate(
+                LinkQuery(
+                    sender_id=sender_id,
+                    recipient_id=rid,
+                    sender_pos=sender_pos,
+                    recipient_pos=pos.get(rid),
+                    tick=tick,
+                    size_bytes=size,
+                )
+            )
+            if not outcome.delivered:
                 self.payload_bytes_dropped += size
                 self.deliveries_dropped += 1
                 continue
