@@ -1,4 +1,4 @@
-# Configuration for the communication channel's transport realism.
+# Configuration for the communication channel's transport realism
 #
 # One place for every comms knob, so the Environment/Runner take a single config
 # object instead of a growing pile of scalar kwargs. Today it holds only the

@@ -4,10 +4,8 @@
 # channel asks its LinkModel `evaluate(query) -> outcome` (uniform Bernoulli drop
 # today) and then applies a per-recipient, per-tick bandwidth cap.
 #
-# A default LinkModel is a perfect (lossless, unlimited) link, so callers that
-# don't care about realism see the original behavior.
-#
-# TODO: distance/range-based loss, then latency (delivery-tick gating here).
+# TODO: a more realistic transport stage would queue messages for later delivery
+# and not be all-to-all
 
 from __future__ import annotations
 
