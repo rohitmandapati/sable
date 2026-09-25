@@ -100,6 +100,9 @@ def test_payload_counters_transmitted_once_delivered_per_recipient():
     ch = CommsChannel()  # lossless, unlimited
     m = ch.send("r0", _cells(2), recipients=["r1", "r2", "r3"], tick=0)
     assert ch.payload_bytes_transmitted == m.payload_size_bytes  # once per broadcast
+    # Delivery counters advance when each recipient drains its arrivals.
+    for rid in ("r1", "r2", "r3"):
+        ch.receive(rid, tick=0)
     assert ch.payload_bytes_delivered == 3 * m.payload_size_bytes  # per recipient
     assert ch.deliveries_made == 3
     assert ch.deliveries_dropped == 0
@@ -121,6 +124,8 @@ def test_bandwidth_cap_is_per_recipient_delivered_payload_limit():
     ch = CommsChannel(LinkModel(CommsConfig(max_bytes_per_tick=one_cell)))
     ch.send("r0", _cells(1), recipients=["r1"], tick=0)  # fits the budget
     ch.send("r2", _cells(1), recipients=["r1"], tick=0)  # same tick -> over budget
+    # The cap is applied at delivery: one message lands, the other is dropped.
+    assert len(ch.receive("r1", tick=0)) == 1
     assert ch.deliveries_made == 1
     assert ch.deliveries_dropped == 1
-    assert len(ch.receive("r1")) == 1
+    assert ch.drops_by_cause["bandwidth"] == 1

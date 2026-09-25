@@ -113,6 +113,7 @@ def test_channel_attributes_stochastic_and_bandwidth_drops():
 
     ch2 = CommsChannel(LinkModel(CommsConfig(max_bytes_per_tick=0)))
     ch2.send("r0", _cells(1), recipients=["r1"], tick=0)
+    ch2.receive("r1", tick=0)  # bandwidth cap is enforced at delivery time
     assert ch2.drops_by_cause["bandwidth"] == 1
 
 

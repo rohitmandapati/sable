@@ -8,16 +8,12 @@
 # stages add distance path-loss, obstacle occlusion, a seed-driven noise field,
 # latency and partial loss without touching the channel or the environment.
 #
-# Stage 1 (this file) implements only uniform (distance-independent) Bernoulli
-# loss; the bandwidth cap lives in the channel because it is stateful per-tick
-# accounting. Positions and grid are carried/stored but unused until the
-# distance/occlusion stage. Defaults describe a perfect (lossless) link.
-#
 # TODO Longterm, replace with GoLang networking daemon.
 
 from __future__ import annotations
 
 import math
+import zlib
 from dataclasses import dataclass
 
 import numpy as np
@@ -37,14 +33,18 @@ class LinkQuery:
     recipient_pos: Position | None
     tick: int
     size_bytes: int
+    # Stable id of the message this decision is about; seeds the per-message
+    # latency RNG. Defaults to 0 so unit callers that only exercise drop physics
+    # need not supply one; the channel always passes the real id.
+    message_id: int = 0
 
 
 @dataclass(frozen=True)
 class LinkOutcome:
     # The link's verdict for one (message, recipient). `delay_ticks` is the
-    # designed seam for latency (0 = same-tick delivery, as today); the channel
-    # honours only delay 0 until the latency stage lands. `drop_cause` labels a
-    # non-delivery for per-cause metrics (None when delivered).
+    # latency the channel applies: the message is handed to the recipient
+    # `delay_ticks` after it was sent (0 = same-tick delivery). `drop_cause`
+    # labels a non-delivery for per-cause metrics (None when delivered).
     delivered: bool
     delay_ticks: int = 0
     drop_cause: str | None = None
@@ -70,6 +70,10 @@ class LinkModel:
         # by policies). Stored for the distance/occlusion stage; unused here.
         self.grid = grid
         self._rng = np.random.default_rng(seed)
+        # Fixed entropy for the per-message latency RNG (independent of the drop
+        # stream above). Captured once so re-runs with the same seed reproduce;
+        # SeedSequence(None) draws and stores OS entropy, matching default_rng.
+        self._latency_entropy = np.random.SeedSequence(seed).entropy
 
     @property
     def max_bytes_per_tick(self) -> int | None:
@@ -79,7 +83,9 @@ class LinkModel:
     def reset(self, seed: int | None = None) -> None:
         # Re-seed at episode start so a re-run reproduces exactly the same draws.
         # Falls back to this model's configured seed when none is supplied.
-        self._rng = np.random.default_rng(self.seed if seed is None else seed)
+        s = self.seed if seed is None else seed
+        self._rng = np.random.default_rng(s)
+        self._latency_entropy = np.random.SeedSequence(s).entropy
 
     def evaluate(self, query: LinkQuery) -> LinkOutcome:
         # Compose independent physical loss causes into one survival probability
@@ -97,8 +103,11 @@ class LinkModel:
         if cr is not None and dist is not None and dist >= cr:
             return LinkOutcome(delivered=False, drop_cause=CAUSE_OUT_OF_RANGE)
 
+        # Ground-truth walls on the line of sight, computed once and reused for
+        # both occlusion loss and per-wall latency (skipped when neither needs it).
+        wall_count = self._wall_count(a, b)
         p_dist = self._distance_drop(dist)
-        p_occ = self._occlusion_drop(a, b)
+        p_occ = self._occlusion_drop(wall_count)
         # A wall stack that fully attenuates is a deterministic block.
         if p_occ >= 1.0:
             return LinkOutcome(delivered=False, drop_cause=CAUSE_OCCLUDED)
@@ -111,7 +120,9 @@ class LinkModel:
 
         if p_drop > 0.0 and self._rng.random() < p_drop:
             return LinkOutcome(delivered=False, drop_cause=CAUSE_STOCHASTIC)
-        return LinkOutcome(delivered=True)
+
+        delay = self._delay_ticks(query, dist, wall_count)
+        return LinkOutcome(delivered=True, delay_ticks=delay)
 
     # -- physical loss causes ------------------------------------------------
 
@@ -127,12 +138,68 @@ class LinkModel:
         # dist >= cr is handled as a hard cutoff by the caller; here dist < cr.
         return ((dist - free) / (cr - free)) ** self.config.distance_falloff
 
-    def _occlusion_drop(self, a: Position | None, b: Position | None) -> float:
+    def _occlusion_drop(self, wall_count: int) -> float:
         # Added drop probability from ground-truth walls on the line of sight.
         atten = self.config.wall_attenuation
-        if atten <= 0.0 or a is None or b is None or self.grid is None:
+        if atten <= 0.0:
             return 0.0
-        return min(1.0, atten * _wall_count_between(self.grid, a, b))
+        return min(1.0, atten * wall_count)
+
+    def _wall_count(self, a: Position | None, b: Position | None) -> int:
+        # Ground-truth walls between a and b, computed only when some cause
+        # (occlusion drop or per-wall latency) actually consumes it -- otherwise
+        # the Bresenham walk is skipped entirely.
+        cfg = self.config
+        if a is None or b is None or self.grid is None:
+            return 0
+        if cfg.wall_attenuation <= 0.0 and cfg.latency_per_wall <= 0.0:
+            return 0
+        return _wall_count_between(self.grid, a, b)
+
+    # -- latency -------------------------------------------------------------
+
+    def _delay_ticks(
+        self, query: LinkQuery, dist: float | None, wall_count: int
+    ) -> int:
+        # Delay = physics-shaped mean + exponential jitter, rounded and clamped.
+        # The no-latency fast path returns 0 without spinning any RNG, so an
+        # unconfigured link is byte-for-byte identical to same-tick delivery.
+        cfg = self.config
+        mean = cfg.latency_base
+        if dist is not None:
+            mean += cfg.latency_per_distance * dist
+        mean += cfg.latency_per_wall * wall_count
+        if mean <= 0.0 and cfg.latency_jitter <= 0.0:
+            return 0
+
+        jitter = 0.0
+        if cfg.latency_jitter > 0.0:
+            rng_jitter, _reserved = self._latency_rng(
+                query.message_id, query.recipient_id
+            )
+            jitter = float(rng_jitter.exponential(cfg.latency_jitter))
+
+        delay = max(0, int(round(mean + jitter)))
+        if cfg.max_latency_ticks is not None:
+            delay = min(delay, cfg.max_latency_ticks)
+        return delay
+
+    def _latency_rng(
+        self, message_id: int, recipient_id: str
+    ) -> tuple[np.random.Generator, np.random.Generator]:
+        # Two independent RNG streams derived from (link entropy, message id,
+        # recipient) -- so a message's delay reproduces regardless of the order
+        # evaluate() is called in, and without touching the drop stream. crc32
+        # gives a stable, process-independent hash of the recipient id (Python's
+        # built-in hash() is salted per run and would break reproducibility).
+        # Stream two is reserved for the later deadzone stage.
+        key = [self._latency_entropy, int(message_id), _stable_id_hash(recipient_id)]
+        child_a, child_b = np.random.SeedSequence(key).spawn(2)
+        return np.random.default_rng(child_a), np.random.default_rng(child_b)
+
+
+def _stable_id_hash(recipient_id: str) -> int:
+    return zlib.crc32(recipient_id.encode("utf-8"))
 
 
 def _distance(a: Position | None, b: Position | None) -> float | None:

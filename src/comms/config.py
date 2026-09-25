@@ -37,6 +37,20 @@ class CommsConfig:
     # wall fully block the link.
     wall_attenuation: float = 0.0
 
+    # -- latency (stage 3) ---------------------------------------------------
+    # Delivered messages arrive `delay_ticks` after they are sent. The delay is
+    # a physics-shaped mean plus a random jitter, drawn from a per-message RNG
+    # keyed on the message id (so it is independent of evaluation order and never
+    # perturbs the drop stream). All knobs default to 0 -> delay 0 -> same-tick
+    # delivery, byte-for-byte identical to the no-latency channel.
+    #   delay = base + per_distance*dist + per_wall*walls + Exponential(jitter),
+    #           rounded, clamped to [0, max_latency_ticks].
+    latency_base: float = 0.0            # fixed floor added to every delivery
+    latency_per_distance: float = 0.0    # ticks added per unit Euclidean distance
+    latency_per_wall: float = 0.0        # ticks added per wall on the line of sight
+    latency_jitter: float = 0.0          # mean of the exponential jitter (ticks)
+    max_latency_ticks: int | None = None # hard cap on delay; None = uncapped
+
     def __post_init__(self) -> None:
         if not 0.0 <= self.drop_prob <= 1.0:
             raise ValueError(f"drop_prob must be in [0, 1], got {self.drop_prob}")
@@ -62,4 +76,17 @@ class CommsConfig:
         if self.wall_attenuation < 0.0:
             raise ValueError(
                 f"wall_attenuation must be >= 0, got {self.wall_attenuation}"
+            )
+        for name in (
+            "latency_base",
+            "latency_per_distance",
+            "latency_per_wall",
+            "latency_jitter",
+        ):
+            value = getattr(self, name)
+            if value < 0.0:
+                raise ValueError(f"{name} must be >= 0, got {value}")
+        if self.max_latency_ticks is not None and self.max_latency_ticks < 0:
+            raise ValueError(
+                f"max_latency_ticks must be >= 0, got {self.max_latency_ticks}"
             )

@@ -441,9 +441,10 @@ class Environment(ParallelEnv):
 
     def _exchange_comms(self, sensed_cells: dict[str, list[Cell]]) -> None:
         # Broadcast each robot's newly-sensed cells to every other alive robot,
-        # then drain inboxes into belief. Delivery is decided by the LinkModel
-        # (uniform drop + per-recipient per-tick bandwidth cap); received cells
-        # update belief_map ONLY -- reveal_cell fills UNKNOWN cells and never
+        # then drain each inbox's due arrivals into belief. Delivery is decided by
+        # the LinkModel (drop physics + latency) and the channel's per-recipient
+        # per-tick bandwidth cap; a delayed message lands on a later tick. Received
+        # cells update belief_map ONLY -- reveal_cell fills UNKNOWN cells and never
         # touches sensed_mask, so a robot's first-hand sensing is never
         # overwritten and the redundancy metric stays physical.
         assert self.comms is not None
@@ -460,7 +461,7 @@ class Environment(ParallelEnv):
                 self.comms.send(rid, cells, recipients, self.tick_count, positions)
         for rid in alive:
             robot = self.robots[rid]
-            for message in self.comms.receive(rid):
+            for message in self.comms.receive(rid, self.tick_count):
                 for (r, c), value in message.cells:
                     robot.reveal_cell((r, c), value)
 
