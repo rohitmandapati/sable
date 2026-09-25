@@ -17,12 +17,13 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 
 import numpy as np
 
 from comms.config import CommsConfig
-from robot import Position
+from robot import KNOWN_WALL, Position
 
 
 @dataclass(frozen=True)
@@ -42,9 +43,17 @@ class LinkQuery:
 class LinkOutcome:
     # The link's verdict for one (message, recipient). `delay_ticks` is the
     # designed seam for latency (0 = same-tick delivery, as today); the channel
-    # honours only delay 0 until the latency stage lands.
+    # honours only delay 0 until the latency stage lands. `drop_cause` labels a
+    # non-delivery for per-cause metrics (None when delivered).
     delivered: bool
     delay_ticks: int = 0
+    drop_cause: str | None = None
+
+
+# Drop-cause labels (for metrics/attribution).
+CAUSE_OUT_OF_RANGE = "out_of_range"
+CAUSE_OCCLUDED = "occluded"
+CAUSE_STOCHASTIC = "stochastic"  # combined uniform + distance + occlusion loss
 
 
 class LinkModel:
@@ -73,11 +82,92 @@ class LinkModel:
         self._rng = np.random.default_rng(self.seed if seed is None else seed)
 
     def evaluate(self, query: LinkQuery) -> LinkOutcome:
-        # Uniform Bernoulli loss. The RNG is drawn once iff drop_prob > 0 (the
-        # short-circuit), so a lossless link consumes no randomness -- preserving
-        # the exact draw order of the previous should_drop() implementation, and
-        # thus byte-for-byte identical results.
-        p = self.config.drop_prob
-        if p > 0.0 and self._rng.random() < p:
-            return LinkOutcome(delivered=False)
+        # Compose independent physical loss causes into one survival probability
+        # and draw once. Deterministic hard failures (out of range, fully
+        # occluded) short-circuit before any RNG draw and are attributed exactly.
+        #
+        # When no distance/occlusion applies (p_dist == p_occ == 0) the drop
+        # probability is exactly config.drop_prob and the RNG is drawn once iff
+        # that is > 0 -- byte-for-byte identical to the stage-1 uniform model.
+        a, b = query.sender_pos, query.recipient_pos
+        dist = _distance(a, b)
+
+        # Hard range cutoff.
+        cr = self.config.comm_range
+        if cr is not None and dist is not None and dist >= cr:
+            return LinkOutcome(delivered=False, drop_cause=CAUSE_OUT_OF_RANGE)
+
+        p_dist = self._distance_drop(dist)
+        p_occ = self._occlusion_drop(a, b)
+        # A wall stack that fully attenuates is a deterministic block.
+        if p_occ >= 1.0:
+            return LinkOutcome(delivered=False, drop_cause=CAUSE_OCCLUDED)
+
+        p_uniform = self.config.drop_prob
+        if p_dist == 0.0 and p_occ == 0.0:
+            p_drop = p_uniform  # exact stage-1 path (no float round-trip)
+        else:
+            p_drop = 1.0 - (1.0 - p_uniform) * (1.0 - p_dist) * (1.0 - p_occ)
+
+        if p_drop > 0.0 and self._rng.random() < p_drop:
+            return LinkOutcome(delivered=False, drop_cause=CAUSE_STOCHASTIC)
         return LinkOutcome(delivered=True)
+
+    # -- physical loss causes ------------------------------------------------
+
+    def _distance_drop(self, dist: float | None) -> float:
+        # Path-loss between reliable_range and comm_range, 0 below, (approaching)
+        # 1 at the cutoff. 0 when distance effects are disabled or unknown.
+        cr = self.config.comm_range
+        if cr is None or dist is None:
+            return 0.0
+        free = self.config.reliable_range
+        if dist <= free:
+            return 0.0
+        # dist >= cr is handled as a hard cutoff by the caller; here dist < cr.
+        return ((dist - free) / (cr - free)) ** self.config.distance_falloff
+
+    def _occlusion_drop(self, a: Position | None, b: Position | None) -> float:
+        # Added drop probability from ground-truth walls on the line of sight.
+        atten = self.config.wall_attenuation
+        if atten <= 0.0 or a is None or b is None or self.grid is None:
+            return 0.0
+        return min(1.0, atten * _wall_count_between(self.grid, a, b))
+
+
+def _distance(a: Position | None, b: Position | None) -> float | None:
+    if a is None or b is None:
+        return None
+    return math.hypot(a[0] - b[0], a[1] - b[1])
+
+
+def _wall_count_between(grid: np.ndarray, a: Position, b: Position) -> int:
+    # Ground-truth wall cells strictly between a and b along a Bresenham line.
+    # Endpoints (the robots' own free cells) are excluded.
+    line = _bresenham(a, b)
+    return sum(1 for (r, c) in line[1:-1] if grid[r, c] == KNOWN_WALL)
+
+
+def _bresenham(a: Position, b: Position) -> list[Position]:
+    # Integer line from a to b inclusive (row, col).
+    r0, c0 = a
+    r1, c1 = b
+    dr = abs(r1 - r0)
+    dc = abs(c1 - c0)
+    sr = 1 if r0 < r1 else -1
+    sc = 1 if c0 < c1 else -1
+    err = dr - dc
+    r, c = r0, c0
+    cells: list[Position] = []
+    while True:
+        cells.append((r, c))
+        if r == r1 and c == c1:
+            break
+        e2 = 2 * err
+        if e2 > -dc:
+            err -= dc
+            r += sr
+        if e2 < dr:
+            err += dr
+            c += sc
+    return cells

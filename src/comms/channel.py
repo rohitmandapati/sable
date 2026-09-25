@@ -42,6 +42,9 @@ class CommsChannel:
         self.payload_bytes_dropped = 0
         self.deliveries_made = 0
         self.deliveries_dropped = 0
+        # Per-cause non-delivery counts (out_of_range / occluded / stochastic
+        # from the link, plus "bandwidth" for cap rejections here).
+        self.drops_by_cause: dict[str, int] = defaultdict(int)
 
     def reset(self, seed: int | None = None) -> None:
         self._inboxes = defaultdict(list)
@@ -53,6 +56,7 @@ class CommsChannel:
         self.payload_bytes_dropped = 0
         self.deliveries_made = 0
         self.deliveries_dropped = 0
+        self.drops_by_cause = defaultdict(int)
         self._link.reset(seed)
 
     def send(
@@ -104,12 +108,14 @@ class CommsChannel:
             if not outcome.delivered:
                 self.payload_bytes_dropped += size
                 self.deliveries_dropped += 1
+                self.drops_by_cause[outcome.drop_cause or "link"] += 1
                 continue
             # Bandwidth cap: drop what doesn't fit this recipient's per-tick
             # delivered-payload budget (no deferral -- latency is a later stage).
             if cap is not None and self._tick_bytes[rid] + size > cap:
                 self.payload_bytes_dropped += size
                 self.deliveries_dropped += 1
+                self.drops_by_cause["bandwidth"] += 1
                 continue
             self._inboxes[rid].append(message)
             self._tick_bytes[rid] += size
