@@ -139,10 +139,13 @@ class Runner:
         return drawn
 
     def _run_episode(
-        self, move_func: str, root: int, density: float, n: int
+        self, move_func: str, root: int, density: float, n: int,
+        map_name: str | None = None,
     ) -> EpisodeRecord:
         # Run a single episode to completion or timeout, always returning a
-        # record. Every attempt is preserved.
+        # record. Every attempt is preserved. When map_name is given a
+        # handcrafted map is used (its own fixed layout/density); density is
+        # then only the procedural fallback and is ignored by generation.
         robot_ids = [f"r{i}" for i in range(n)]
         env = Environment(
             width=self.width,
@@ -150,6 +153,7 @@ class Runner:
             robot_ids=robot_ids,
             obstacle_density=density,
             max_ticks=self.max_ticks,
+            map_name=map_name,
             enable_comms=self.enable_comms,
             comms_drop_prob=self.comms_drop_prob,
             comms_max_bytes_per_tick=self.comms_max_bytes_per_tick,
