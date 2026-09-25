@@ -6,7 +6,7 @@ conftest.py puts src/ on sys.path, so imports are flat (from comms import ...).
 import numpy as np
 import pytest
 
-from comms import CommsChannel, LinkModel, Message
+from comms import CommsChannel, CommsConfig, LinkModel, Message
 from robot import KNOWN_FREE, KNOWN_WALL
 
 
@@ -107,7 +107,7 @@ def test_payload_counters_transmitted_once_delivered_per_recipient():
 
 
 def test_payload_counters_count_drops():
-    ch = CommsChannel(LinkModel(drop_prob=1.0))
+    ch = CommsChannel(LinkModel(CommsConfig(drop_prob=1.0)))
     m = ch.send("r0", _cells(2), recipients=["r1", "r2"], tick=0)
     assert ch.payload_bytes_transmitted == m.payload_size_bytes  # still transmitted
     assert ch.payload_bytes_delivered == 0
@@ -118,7 +118,7 @@ def test_payload_counters_count_drops():
 
 def test_bandwidth_cap_is_per_recipient_delivered_payload_limit():
     one_cell = 6  # three little-endian int16
-    ch = CommsChannel(LinkModel(max_bytes_per_tick=one_cell))
+    ch = CommsChannel(LinkModel(CommsConfig(max_bytes_per_tick=one_cell)))
     ch.send("r0", _cells(1), recipients=["r1"], tick=0)  # fits the budget
     ch.send("r2", _cells(1), recipients=["r1"], tick=0)  # same tick -> over budget
     assert ch.deliveries_made == 1
