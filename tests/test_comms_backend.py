@@ -111,15 +111,36 @@ def test_sequence_ids_are_unique_and_monotonic():
 
 # -- stats + reset --------------------------------------------------------------
 
-def test_stats_account_payload_bytes_and_counts():
+def test_stats_account_payload_and_wire_bytes_and_counts():
     backend = PerfectBroadcastBackend(["a", "b", "c"])
     backend.broadcast("a", _cells(1), tick=1)   # 1 cell = 6 payload bytes
     assert backend.stats.messages_transmitted == 1
     assert backend.stats.payload_bytes_transmitted == 6
+    # Wire also carries the header, so it exceeds the payload.
+    assert backend.stats.wire_bytes_transmitted > backend.stats.payload_bytes_transmitted
     backend.deliver("b", tick=2)
     backend.deliver("c", tick=2)
     assert backend.stats.deliveries_made == 2   # one send, two recipients
     assert backend.stats.payload_bytes_delivered == 12
+    # Delivered wire bytes = per-recipient wire size, summed over both recipients.
+    assert backend.stats.wire_bytes_delivered == 2 * backend.stats.wire_bytes_transmitted
+
+
+def test_message_not_delivered_on_its_creation_tick():
+    # Next-tick delivery: a message sent at tick t is held until a later deliver.
+    backend = PerfectBroadcastBackend(["a", "b"])
+    backend.broadcast("a", _cells(1), tick=5)
+    assert backend.deliver("b", tick=5) == []   # same tick -> held
+    (msg,) = backend.deliver("b", tick=6)        # next tick -> delivered
+    assert msg.age == 1
+
+
+def test_sequence_ids_are_scoped_per_sender():
+    backend = PerfectBroadcastBackend(["a", "b", "c"])
+    backend.broadcast("a", _cells(1), tick=1)
+    backend.broadcast("c", _cells(1), tick=1)   # a different sender
+    for_b = {m.sender_id: m.sequence_id for m in backend.deliver("b", tick=2)}
+    assert for_b["a"] == 0 and for_b["c"] == 0   # each sender starts its own count
 
 
 def test_reset_clears_inboxes_and_stats():
@@ -129,6 +150,8 @@ def test_reset_clears_inboxes_and_stats():
     assert backend.deliver("b", tick=2) == []
     assert backend.stats.messages_transmitted == 0
     assert backend.stats.payload_bytes_delivered == 0
+    assert backend.stats.wire_bytes_transmitted == 0
+    assert backend.stats.wire_bytes_delivered == 0
 
 
 def test_empty_payload_is_a_legal_send():

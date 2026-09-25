@@ -9,6 +9,10 @@ belief_map (+ trust_map) ONLY -- never sensed_mask. So comms must:
     for an identical action sequence, and
   - enrich per-robot belief with correct teammate cells.
 
+Delivery is NEXT-TICK: a message broadcast at tick t is not delivered until tick
+t+1. In particular the initial-sensing deltas sent during reset (tick 0) are not
+visible in the reset observations -- they arrive on the first step (age 1).
+
 The backend is the lossless PerfectBroadcastBackend; loss/latency behavior will
 be tested against the specific backends that introduce them.
 """
@@ -99,8 +103,13 @@ def test_comms_leaves_physical_sensing_identical_to_baseline():
 
 def test_delivery_stats_are_tracked():
     env = _run_script(_env(enable_comms=True))
-    assert env.comms.stats.payload_bytes_delivered > 0
-    assert env.comms.stats.deliveries_made > 0
+    stats = env.comms.stats
+    assert stats.payload_bytes_delivered > 0
+    assert stats.deliveries_made > 0
+    # Wire accounting is tracked alongside payload; the frame carries a header, so
+    # wire bytes strictly exceed payload bytes for the same traffic.
+    assert stats.wire_bytes_transmitted > stats.payload_bytes_transmitted
+    assert stats.wire_bytes_delivered > stats.payload_bytes_delivered
 
 
 # -- tick-zero (initial-sensing) sharing ---------------------------------------
@@ -113,11 +122,19 @@ def test_tick_zero_no_comms_belief_equals_sensed():
         assert np.array_equal(_known(robot), robot.sensed_mask)
 
 
-def test_tick_zero_sharing_enriches_belief_never_sensed_mask():
-    # With comms on, the initial deltas are exchanged at tick 0, so -- with no
-    # steps taken -- each robot already believes cells it never sensed itself.
+def test_tick_zero_broadcasts_but_delivers_next_tick():
+    # Next-tick delivery: the tick-0 deltas are broadcast during reset but NOT
+    # delivered yet, so with no steps taken belief still equals first-hand sensing.
     env = _env(enable_comms=True)
     env.reset(seed=0)  # no steps
+    for robot in env.robots.values():
+        assert np.array_equal(_known(robot), robot.sensed_mask)  # nothing fused yet
+    assert env.comms.stats.payload_bytes_transmitted > 0  # ...but the send happened
+    assert env.comms.stats.payload_bytes_delivered == 0
+
+    # One STAY step later, the tick-0 broadcasts arrive (age 1) and enrich belief
+    # with cells this robot never sensed itself.
+    env.step({rid: Action.STAY for rid in env.agents})
     found = False
     for robot in env.robots.values():
         received = _known(robot) & ~robot.sensed_mask
@@ -126,6 +143,5 @@ def test_tick_zero_sharing_enriches_belief_never_sensed_mask():
             for r, c in np.argwhere(received):
                 assert robot.belief_map[r, c] == env.map.grid[r, c]  # correct
                 assert not robot.sensed_mask[r, c]  # never first-hand
-    assert found  # two distinct spawns must exchange at least one cell at tick 0
-    assert env.comms.stats.payload_bytes_transmitted > 0
+    assert found  # two distinct spawns must exchange at least one cell
     assert env.comms.stats.payload_bytes_delivered > 0

@@ -70,14 +70,24 @@ def test_fuse_writes_belief_and_trust_but_not_sensed_mask():
     assert not robot.sensed_mask[2, 3]              # first-hand record untouched
 
 
-def test_fuse_does_not_overwrite_known_belief_but_still_records_trust():
+def test_fuse_conflict_keeps_belief_and_does_not_stamp_trust():
     robot = Robot(robot_id="r", pos=(0, 0), map_shape=(4, 4))
     robot.belief_map[1, 1] = KNOWN_FREE             # already known first-hand
     inbox = ReceiveInbox()
     inbox.enqueue([_delivered([((1, 1), KNOWN_WALL)])])   # conflicting claim
     process_inbox(robot, inbox, TrustAllReceiver(), tick=2)
     assert robot.belief_map[1, 1] == KNOWN_FREE     # belief unchanged
-    assert robot.trust_map[1, 1] == 1.0             # trust still recorded
+    assert robot.trust_map[1, 1] == 0.0             # conflict -> no trust stamped
+
+
+def test_fuse_agreeing_message_records_trust():
+    robot = Robot(robot_id="r", pos=(0, 0), map_shape=(4, 4))
+    robot.belief_map[1, 1] = KNOWN_FREE             # already known
+    inbox = ReceiveInbox()
+    inbox.enqueue([_delivered([((1, 1), KNOWN_FREE)])])   # agrees with belief
+    process_inbox(robot, inbox, TrustAllReceiver(), tick=2)
+    assert robot.belief_map[1, 1] == KNOWN_FREE     # belief unchanged
+    assert robot.trust_map[1, 1] == 1.0             # supports stored value -> trust
 
 
 def test_trust_accumulates_by_max():
