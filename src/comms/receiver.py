@@ -50,14 +50,32 @@ class ReceiverAction:
             raise ValueError(f"trust must be in [0, 1], got {self.trust}")
 
 
-@dataclass
+def readonly_view(array: np.ndarray) -> np.ndarray:
+    # A non-writeable view that SHARES the source's memory: a policy can READ the
+    # live belief but cannot mutate sim state through it (any write raises). No copy
+    # -- the view is cheap and a context is consumed within the tick it's built, so
+    # snapshot isolation isn't needed here (unlike RobotObservation, which copies
+    # because it must survive later steps). Setting the source array itself
+    # read-only would break the env's own writes, so we freeze a fresh view only.
+    view = array.view()
+    view.flags.writeable = False
+    return view
+
+
+@dataclass(frozen=True)
 class ReceiveContext:
     # What the trust head sees beyond the message itself. Small on purpose; the
     # learned head will grow this (per-sender history, latency/trust stats,
     # completeness estimates). `belief_map` is the receiver's CURRENT belief, so
-    # a message is interpreted against everything fused before it this tick.
+    # a message is interpreted against everything fused before it this tick. The
+    # context is frozen and `belief_map` is exposed read-only: interpreting a
+    # message must never mutate robot/world state (fusion happens only via
+    # Robot.fuse_cell, never through this view).
     tick: int
     belief_map: np.ndarray
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "belief_map", readonly_view(self.belief_map))
 
 
 @runtime_checkable

@@ -32,23 +32,29 @@ from comms.receiver import (
     ReceiverDecision,
     ReceiverTrustPolicy,
     TrustAllReceiver,
+    readonly_view,
 )
 from robot import Position
 
 
-@dataclass
+@dataclass(frozen=True)
 class SendContext:
     # What the send head sees this tick. Small on purpose and mirrors
     # ReceiveContext on the receive side; the learned send head will grow this
     # (neighbor estimates, budget, message history) without changing the seam.
     # `sensed_cells` is this robot's newly-sensed belief delta -- the exact batch
-    # the baseline broadcasts. belief_map/position are provided read-only for
-    # smarter senders; the baseline ignores them.
+    # the baseline broadcasts. The context is frozen and `belief_map` is exposed
+    # read-only: deciding what to send must never mutate robot/world state, so a
+    # future learned send head cannot corrupt the live belief through this view.
+    # belief_map/position are provided for smarter senders; the baseline ignores them.
     robot_id: str
     tick: int
     sensed_cells: tuple[Cell, ...]
     position: Position
     belief_map: np.ndarray
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "belief_map", readonly_view(self.belief_map))
 
 
 @runtime_checkable
