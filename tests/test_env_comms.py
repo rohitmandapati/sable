@@ -3,11 +3,14 @@
 conftest.py puts src/ on sys.path, so imports are flat.
 
 Comms is off by default. When on, robots broadcast newly-sensed cells each tick
-and fold whatever the (lossy) channel delivers into belief_map ONLY -- never
-sensed_mask. So comms must:
+over the CommsBackend and the receive/trust head fuses whatever is delivered into
+belief_map (+ trust_map) ONLY -- never sensed_mask. So comms must:
   - leave physical sensing (sensed_mask, redundancy, coverage-union) untouched
     for an identical action sequence, and
   - enrich per-robot belief with correct teammate cells.
+
+The backend is the lossless PerfectBroadcastBackend; loss/latency behavior will
+be tested against the specific backends that introduce them.
 """
 
 import numpy as np
@@ -17,7 +20,7 @@ from environment import Environment
 from robot import UNKNOWN
 
 
-def _env(enable_comms=False, drop_prob=0.0, max_bytes=None):
+def _env(enable_comms=False):
     # Open 12x12 map so movement is unobstructed and deterministic per seed.
     return Environment(
         width=12,
@@ -25,8 +28,6 @@ def _env(enable_comms=False, drop_prob=0.0, max_bytes=None):
         robot_ids=["r0", "r1"],
         obstacle_density=0.0,
         enable_comms=enable_comms,
-        comms_drop_prob=drop_prob,
-        comms_max_bytes_per_tick=max_bytes,
     )
 
 
@@ -58,6 +59,8 @@ def test_comms_off_by_default_belief_equals_sensed():
     for robot in env.robots.values():
         # No sharing -> belief comes only from own sensing.
         assert np.array_equal(_known(robot), robot.sensed_mask)
+        # ...and nothing was ever fused, so the trust overlay stays empty.
+        assert not robot.trust_map.any()
 
 
 # -- comms on: belief propagates, physical state preserved ----------------------
@@ -70,10 +73,11 @@ def test_comms_propagates_correct_teammate_cells_into_belief():
         if received_only.any():
             found_received = True
             for r, c in np.argwhere(received_only):
-                # Received belief must match ground truth (no corruption) and must
-                # NOT be recorded as first-hand sensing.
+                # Received belief must match ground truth (no corruption), must
+                # NOT be recorded as first-hand sensing, and must carry trust.
                 assert robot.belief_map[r, c] == env.map.grid[r, c]
                 assert not robot.sensed_mask[r, c]
+                assert robot.trust_map[r, c] == 1.0  # TrustAllReceiver baseline
     assert found_received  # lossless comms between two moving robots must share
 
 
@@ -93,17 +97,10 @@ def test_comms_leaves_physical_sensing_identical_to_baseline():
     )
 
 
-def test_dropping_everything_matches_no_comms():
-    env = _run_script(_env(enable_comms=True, drop_prob=1.0))
-    for robot in env.robots.values():
-        assert np.array_equal(_known(robot), robot.sensed_mask)  # nothing received
-    assert env.comms.payload_bytes_delivered == 0
-    assert env.comms.deliveries_dropped > 0
-
-
-def test_bandwidth_and_delivery_stats_are_tracked():
+def test_delivery_stats_are_tracked():
     env = _run_script(_env(enable_comms=True))
-    assert env.comms.payload_bytes_delivered > 0
+    assert env.comms.stats.payload_bytes_delivered > 0
+    assert env.comms.stats.deliveries_made > 0
 
 
 # -- tick-zero (initial-sensing) sharing ---------------------------------------
@@ -130,26 +127,5 @@ def test_tick_zero_sharing_enriches_belief_never_sensed_mask():
                 assert robot.belief_map[r, c] == env.map.grid[r, c]  # correct
                 assert not robot.sensed_mask[r, c]  # never first-hand
     assert found  # two distinct spawns must exchange at least one cell at tick 0
-    assert env.comms.payload_bytes_transmitted > 0
-    assert env.comms.payload_bytes_delivered > 0
-
-
-def test_tick_zero_total_loss_delivers_nothing():
-    env = _env(enable_comms=True, drop_prob=1.0)
-    env.reset(seed=0)  # no steps
-    for robot in env.robots.values():
-        assert np.array_equal(_known(robot), robot.sensed_mask)  # nothing received
-    assert env.comms.payload_bytes_transmitted > 0  # the tick-0 broadcast happened
-    assert env.comms.payload_bytes_delivered == 0
-    assert env.comms.deliveries_dropped > 0
-
-
-def test_tick_zero_bandwidth_rejection_delivers_nothing():
-    # A zero per-recipient budget rejects every tick-0 delivery at the cap.
-    env = _env(enable_comms=True, max_bytes=0)
-    env.reset(seed=0)  # no steps
-    for robot in env.robots.values():
-        assert np.array_equal(_known(robot), robot.sensed_mask)
-    assert env.comms.payload_bytes_transmitted > 0
-    assert env.comms.payload_bytes_delivered == 0
-    assert env.comms.deliveries_dropped > 0
+    assert env.comms.stats.payload_bytes_transmitted > 0
+    assert env.comms.stats.payload_bytes_delivered > 0

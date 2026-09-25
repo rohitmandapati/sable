@@ -7,7 +7,13 @@ from collections.abc import Iterable, Mapping
 import numpy as np
 
 from actions import Action
-from comms import Cell, CommsChannel, LinkModel
+from comms import (
+    Cell,
+    PerfectBroadcastBackend,
+    ReceiveInbox,
+    TrustAllReceiver,
+    process_inbox,
+)
 from map import Map
 from robot import KNOWN_FREE, Position, Robot
 from seeding import (
@@ -107,9 +113,6 @@ class Environment(ParallelEnv):
         max_generation_attempts: int = 100,
         map_name: str | None = None,
         enable_comms: bool = False,
-        comms_drop_prob: float = 0.0,
-        comms_max_bytes_per_tick: int | None = None,
-        comms_seed: int | None = None,
     ) -> None:
         # Validate world inputs up front (Map re-validates at generation time).
         self.width = validate_dimension("width", width)
@@ -130,16 +133,17 @@ class Environment(ParallelEnv):
         self.map_name = map_name
 
         # Comms (off by default so the classical baseline is untouched). When on,
-        # robots broadcast newly-sensed cells each tick; received cells fill
-        # belief_map only (never sensed_mask), so physical-sensing redundancy
-        # stays a true measure of duplicated exploration effort.
+        # robots broadcast newly-sensed cells each tick through a CommsBackend;
+        # received cells are fused into belief_map (+ trust_map) only, never
+        # sensed_mask, so physical-sensing redundancy stays a true measure of
+        # duplicated exploration effort. The backend is currently the lossless
+        # PerfectBroadcastBackend; lossy/latency/adversarial backends drop in
+        # behind the same interface without touching the env.
         self.enable_comms = enable_comms
-        self.comms_drop_prob = comms_drop_prob
-        self.comms_max_bytes_per_tick = comms_max_bytes_per_tick
-        # An explicit comms seed pins that one stream regardless of the episode
-        # root (so a caller can hold the map fixed while varying network loss).
-        self.comms_seed = comms_seed
-        self.comms: CommsChannel | None = None
+        self.comms: PerfectBroadcastBackend | None = None
+        # The receive/trust head. TrustAllReceiver (fuse everything at full
+        # trust) is the baseline the learned trust policy will replace.
+        self._receiver = TrustAllReceiver()
 
         self.map: Map | None = None
         self.robots: dict[str, Robot] = {}
@@ -190,13 +194,9 @@ class Environment(ParallelEnv):
         # map_name -- never by overloading `seed`.
         options = options or {}
 
-        # Independent stream seeds. Per-stream overrides (constructor comms_seed
-        # or options["seeds"]) let a caller hold the map fixed while varying,
-        # e.g., spawn or network seeds.
-        overrides: dict[str, int] = {}
-        if self.comms_seed is not None:
-            overrides["comms"] = self.comms_seed
-        overrides.update(options.get("seeds", {}))
+        # Independent stream seeds. Per-stream overrides via options["seeds"] let
+        # a caller hold the map fixed while varying, e.g., the spawn stream.
+        overrides = dict(options.get("seeds", {}))
         self.seeds = derive_episode_seeds(seed, overrides=overrides)
 
         map_name = options.get("map", self.map_name)
@@ -229,16 +229,12 @@ class Environment(ParallelEnv):
         self._spawn_rng = np.random.default_rng(self.seeds.spawn)
         self._dynamics_rng = np.random.default_rng(self.seeds.dynamics)
 
-        # Fresh comms channel per episode, on its own seeded stream.
-        if self.enable_comms:
-            link = LinkModel(
-                drop_prob=self.comms_drop_prob,
-                max_bytes_per_tick=self.comms_max_bytes_per_tick,
-                seed=self.seeds.comms,
-            )
-            self.comms = CommsChannel(link)
-        else:
-            self.comms = None
+        # Fresh comms backend per episode. PerfectBroadcastBackend is lossless, so
+        # it needs no RNG; the comms seed stream still lives in the manifest for
+        # when a stochastic backend is wired in.
+        self.comms = (
+            PerfectBroadcastBackend(self.robot_ids) if self.enable_comms else None
+        )
 
         free_cells = self.map.free_cells
         if len(free_cells) < len(self.robot_ids):
@@ -428,26 +424,28 @@ class Environment(ParallelEnv):
         return revealed
 
     def _exchange_comms(self, sensed_cells: dict[str, list[Cell]]) -> None:
-        # Broadcast each robot's newly-sensed cells to every other alive robot,
-        # then drain inboxes into belief. Delivery is decided by the LinkModel
-        # (uniform drop + per-recipient per-tick bandwidth cap); received cells
-        # update belief_map ONLY -- reveal_cell fills UNKNOWN cells and never
-        # touches sensed_mask, so a robot's first-hand sensing is never
-        # overwritten and the redundancy metric stays physical.
+        # Broadcast each robot's newly-sensed cells over the comms backend, then
+        # deliver + fuse. The receive/trust policy decides what to do with each
+        # message; fusion updates belief_map (+ trust_map) ONLY and never touches
+        # sensed_mask, so first-hand sensing is never overwritten and the
+        # redundancy metric stays physical. Delivery is same-tick here, so a
+        # received message carries age 0.
         assert self.comms is not None
         alive = self.active_robot_ids()
         for rid in alive:
             cells = tuple(sensed_cells.get(rid, ()))
-            if not cells:
-                continue
-            recipients = [other for other in alive if other != rid]
-            if recipients:
-                self.comms.send(rid, cells, recipients, self.tick_count)
+            if cells:
+                self.comms.broadcast(
+                    rid,
+                    cells,
+                    tick=self.tick_count,
+                    sender_position=self.robots[rid].pos,
+                )
         for rid in alive:
             robot = self.robots[rid]
-            for message in self.comms.receive(rid):
-                for (r, c), value in message.cells:
-                    robot.reveal_cell((r, c), value)
+            inbox = ReceiveInbox()
+            inbox.enqueue(self.comms.deliver(rid, self.tick_count))
+            process_inbox(robot, inbox, self._receiver, tick=self.tick_count)
 
     def _known_free_mask(self) -> np.ndarray:
         mask = np.zeros((self.height, self.width), dtype=bool)
