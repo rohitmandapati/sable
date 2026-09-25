@@ -110,9 +110,9 @@ def test_comms_stats_recorded_when_enabled():
     r.run(iters=1)
     rec = r.records[0]
     assert rec.comms_enabled
-    assert rec.messages_attempted == rec.messages_delivered + rec.messages_dropped
-    assert rec.bytes_attempted == rec.bytes_delivered + rec.bytes_dropped
+    # Lossless backend: every broadcast reaches the teammate.
     assert rec.messages_delivered > 0  # two robots share sensed cells each tick
+    assert rec.bytes_delivered > 0
 
 
 def test_comms_disabled_leaves_zero_stats():
@@ -120,7 +120,7 @@ def test_comms_disabled_leaves_zero_stats():
     r.run(iters=1)
     rec = r.records[0]
     assert rec.comms_enabled is False
-    assert rec.messages_attempted == 0 and rec.bytes_attempted == 0
+    assert rec.messages_delivered == 0 and rec.bytes_delivered == 0
 
 
 # -- machine-readable output -------------------------------------------------

@@ -61,15 +61,10 @@ class EpisodeRecord:
     conflicts: int
     redundancy: float
 
-    # Communication
+    # Communication (lossless backend: everything transmitted is delivered)
     comms_enabled: bool
-    comms_drop_prob: float
-    messages_attempted: int
     messages_delivered: int
-    messages_dropped: int
-    bytes_attempted: int
     bytes_delivered: int
-    bytes_dropped: int
 
 
 class Runner:
@@ -85,8 +80,6 @@ class Runner:
         seed_stream: int = 0,
         policy_seed: int = 0,
         enable_comms: bool = False,
-        comms_drop_prob: float = 0.0,
-        comms_max_bytes_per_tick: int | None = None,
     ):
         self.move_funcs = move_funcs
         self.width, self.height = size
@@ -102,8 +95,6 @@ class Runner:
         # Comms toggle so a sweep can compare coordinated (belief-sharing) teams
         # against the uncoordinated baseline on identical maps.
         self.enable_comms = enable_comms
-        self.comms_drop_prob = comms_drop_prob
-        self.comms_max_bytes_per_tick = comms_max_bytes_per_tick
 
         # Populated by run().
         self.records: list[EpisodeRecord] = []
@@ -151,8 +142,6 @@ class Runner:
             obstacle_density=density,
             max_ticks=self.max_ticks,
             enable_comms=self.enable_comms,
-            comms_drop_prob=self.comms_drop_prob,
-            comms_max_bytes_per_tick=self.comms_max_bytes_per_tick,
         )
 
         # Fold the runner's policy_seed into the episode's policy stream via an
@@ -196,10 +185,8 @@ class Runner:
         completed = env.coverage_complete()
         ch = env.comms
         comms_on = ch is not None
-        msgs_delivered = ch.deliveries_made if comms_on else 0
-        msgs_dropped = ch.deliveries_dropped if comms_on else 0
-        bytes_delivered = ch.payload_bytes_delivered if comms_on else 0
-        bytes_dropped = ch.payload_bytes_dropped if comms_on else 0
+        msgs_delivered = ch.stats.deliveries_made if comms_on else 0
+        bytes_delivered = ch.stats.payload_bytes_delivered if comms_on else 0
 
         return EpisodeRecord(
             policy=move_func,
@@ -230,13 +217,8 @@ class Runner:
             conflicts=env.conflicts,
             redundancy=env.sensing_redundancy(),
             comms_enabled=comms_on,
-            comms_drop_prob=self.comms_drop_prob,
-            messages_attempted=msgs_delivered + msgs_dropped,
             messages_delivered=msgs_delivered,
-            messages_dropped=msgs_dropped,
-            bytes_attempted=bytes_delivered + bytes_dropped,
             bytes_delivered=bytes_delivered,
-            bytes_dropped=bytes_dropped,
         )
 
     def run(
@@ -274,8 +256,6 @@ class Runner:
             "seed_stream": self.seed_stream,
             "policy_seed": self.policy_seed,
             "enable_comms": self.enable_comms,
-            "comms_drop_prob": self.comms_drop_prob,
-            "comms_max_bytes_per_tick": self.comms_max_bytes_per_tick,
         }
 
 
@@ -339,12 +319,8 @@ def aggregate_records(
             "mean_ticks_to_95": reached_mean("ticks_to_95"),
             # comms
             "comms_enabled": float(any(r.comms_enabled for r in group)),
-            "messages_attempted": _mean([r.messages_attempted for r in group]),
             "messages_delivered": _mean([r.messages_delivered for r in group]),
-            "messages_dropped": _mean([r.messages_dropped for r in group]),
-            "bytes_attempted": _mean([r.bytes_attempted for r in group]),
             "bytes_delivered": _mean([r.bytes_delivered for r in group]),
-            "bytes_dropped": _mean([r.bytes_dropped for r in group]),
         }
         results.setdefault(policy, {}).setdefault(density, {})[n] = metrics
 
@@ -454,9 +430,8 @@ def log_results(
                 f.write(f"speedup_vs_1: {metrics.get('speedup', float('nan')):.4f}\n")
                 if metrics.get("comms_enabled"):
                     f.write(
-                        f"comms: attempted={metrics['messages_attempted']:.1f} msgs, "
-                        f"delivered={metrics['messages_delivered']:.1f}, "
-                        f"dropped={metrics['messages_dropped']:.1f}\n"
+                        f"comms: delivered={metrics['messages_delivered']:.1f} msgs, "
+                        f"bytes={metrics['bytes_delivered']:.1f}\n"
                     )
 
     def mean(key: str, rows: list[tuple[float, int, str, dict[str, float]]]) -> float:
