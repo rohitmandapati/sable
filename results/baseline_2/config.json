@@ -1,0 +1,140 @@
+{
+  "git_commit": "eabcd79e58ab0a6a0d24a9ba95acffa231659345",
+  "n_workers": 7,
+  "total_episodes": 1688,
+  "block_A": {
+    "policies": [
+      "move_toward_frontier_astar",
+      "move_toward_unknown_bfs",
+      "coordinated_frontier_greedy",
+      "coordinated_frontier_hungarian"
+    ],
+    "size": [
+      25,
+      25
+    ],
+    "density": 0.3,
+    "robots": [
+      1,
+      2,
+      4,
+      8
+    ],
+    "seeds": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7
+    ],
+    "max_ticks": 3000,
+    "comms": "off"
+  },
+  "block_B": {
+    "policies": [
+      "move_toward_frontier_astar",
+      "coordinated_frontier_greedy",
+      "coordinated_frontier_hungarian"
+    ],
+    "size": [
+      25,
+      25
+    ],
+    "density": 0.3,
+    "robots": 4,
+    "seeds": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9
+    ],
+    "max_ticks": 3000,
+    "ladder": [
+      {
+        "enable_comms": false,
+        "drop": 0.0,
+        "label": "off"
+      },
+      {
+        "enable_comms": true,
+        "drop": 0.0,
+        "label": "lossless"
+      },
+      {
+        "enable_comms": true,
+        "drop": 0.3,
+        "label": "drop0.3"
+      },
+      {
+        "enable_comms": true,
+        "drop": 0.7,
+        "label": "drop0.7"
+      }
+    ]
+  },
+  "block_C": {
+    "policies": [
+      "move_toward_frontier_astar",
+      "move_toward_unknown_bfs",
+      "coordinated_frontier_greedy",
+      "coordinated_frontier_hungarian"
+    ],
+    "size": [
+      10,
+      10
+    ],
+    "maps": [
+      "empty",
+      "bordered_room",
+      "single_corridor",
+      "bottleneck",
+      "two_bottlenecks",
+      "four_rooms",
+      "nested_rooms",
+      "comb",
+      "u_trap",
+      "central_block",
+      "pillars",
+      "dense_pillars",
+      "zigzag",
+      "spiral",
+      "ring",
+      "cross_corridors",
+      "diagonal_wall",
+      "maze"
+    ],
+    "robots": [
+      2,
+      4
+    ],
+    "seeds": [
+      0,
+      1,
+      2,
+      3,
+      4
+    ],
+    "max_ticks": 1500,
+    "comms": [
+      {
+        "enable_comms": false,
+        "drop": 0.0,
+        "label": "off"
+      },
+      {
+        "enable_comms": true,
+        "drop": 0.0,
+        "label": "lossless"
+      }
+    ]
+  }
+}
