@@ -9,10 +9,11 @@ import numpy as np
 from actions import Action
 from comms import (
     Cell,
-    CommunicationAction,
+    CommsPolicy,
     PerfectBroadcastBackend,
     ReceiveInbox,
-    TrustAllReceiver,
+    SendContext,
+    default_comms_policy,
     process_inbox,
 )
 from map import Map
@@ -114,6 +115,7 @@ class Environment(ParallelEnv):
         max_generation_attempts: int = 100,
         map_name: str | None = None,
         enable_comms: bool = False,
+        comms_policy: CommsPolicy | None = None,
     ) -> None:
         # Validate world inputs up front (Map re-validates at generation time).
         self.width = validate_dimension("width", width)
@@ -142,9 +144,15 @@ class Environment(ParallelEnv):
         # behind the same interface without touching the env.
         self.enable_comms = enable_comms
         self.comms: PerfectBroadcastBackend | None = None
-        # The receive/trust head. TrustAllReceiver (fuse everything at full
-        # trust) is the baseline the learned trust policy will replace.
-        self._receiver = TrustAllReceiver()
+        # The comms POLICY drives both sides of communication -- the send head
+        # (what to transmit) and the receive/trust head (what to do with each
+        # delivered message). When comms is enabled and no policy is supplied it
+        # defaults to the classical baseline (broadcast newly-sensed cells + trust
+        # everything), which reproduces the env's original inline behavior exactly.
+        # A learned MAPPO comms policy drops in here later behind the same seam.
+        self.comms_policy: CommsPolicy = (
+            comms_policy if comms_policy is not None else default_comms_policy()
+        )
 
         self.map: Map | None = None
         self.robots: dict[str, Robot] = {}
@@ -425,31 +433,37 @@ class Environment(ParallelEnv):
         return revealed
 
     def _exchange_comms(self, sensed_cells: dict[str, list[Cell]]) -> None:
-        # The baseline SEND policy: every robot broadcasts its newly-sensed cells
-        # as one CommunicationAction, routed through the backend's execute() -- the
-        # exact entry point the learned send head will use. Then deliver + fuse.
-        # The receive/trust policy decides what to do with each message; fusion
-        # updates belief_map (+ trust_map) ONLY and never touches sensed_mask, so
-        # first-hand sensing is never overwritten and the redundancy metric stays
-        # physical. Delivery is next-tick, so a received message carries age >= 1
-        # (this tick's broadcasts are delivered on the following tick).
+        # Drive comms entirely through the comms policy. The SEND head turns each
+        # robot's newly-sensed delta into a CommunicationAction, routed through the
+        # backend's execute() -- the exact entry point the learned send head uses;
+        # a skip transmits nothing. Then deliver + let the RECEIVE/TRUST head decide
+        # what to do with each message. Fusion updates belief_map (+ trust_map) ONLY
+        # and never touches sensed_mask, so first-hand sensing is never overwritten
+        # and the redundancy metric stays physical. Delivery is next-tick, so a
+        # received message carries age >= 1 (this tick's broadcasts arrive next).
         assert self.comms is not None
         alive = self.active_robot_ids()
         for rid in alive:
-            cells = tuple(sensed_cells.get(rid, ()))
-            if cells:
-                action = CommunicationAction.broadcast(cells)
-                self.comms.execute(
-                    action,
-                    sender_id=rid,
-                    tick=self.tick_count,
-                    sender_position=self.robots[rid].pos,
-                )
+            robot = self.robots[rid]
+            context = SendContext(
+                robot_id=rid,
+                tick=self.tick_count,
+                sensed_cells=tuple(sensed_cells.get(rid, ())),
+                position=robot.pos,
+                belief_map=robot.belief_map,
+            )
+            action = self.comms_policy.decide_send(context)
+            self.comms.execute(
+                action,
+                sender_id=rid,
+                tick=self.tick_count,
+                sender_position=robot.pos,
+            )
         for rid in alive:
             robot = self.robots[rid]
             inbox = ReceiveInbox()
             inbox.enqueue(self.comms.deliver(rid, self.tick_count))
-            process_inbox(robot, inbox, self._receiver, tick=self.tick_count)
+            process_inbox(robot, inbox, self.comms_policy, tick=self.tick_count)
 
     def _known_free_mask(self) -> np.ndarray:
         mask = np.zeros((self.height, self.width), dtype=bool)

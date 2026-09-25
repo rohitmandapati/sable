@@ -10,6 +10,15 @@ from comms.action import CommunicationAction, PayloadKind
 from comms.backend import CommsBackend, CommsStats, PerfectBroadcastBackend
 from comms.delivered import DeliveredMessage
 from comms.message import Cell, Message
+from comms.policy import (
+    BroadcastNewCellsSender,
+    CommsPolicy,
+    CompositeCommsPolicy,
+    NoCommsPolicy,
+    SendContext,
+    SenderPolicy,
+    default_comms_policy,
+)
 from comms.receiver import (
     ReceiveContext,
     ReceiveInbox,
@@ -39,4 +48,12 @@ __all__ = [
     "ReceiverTrustPolicy",
     "TrustAllReceiver",
     "process_inbox",
+    # unified comms policy seam (send head + receive/trust head)
+    "CommsPolicy",
+    "SenderPolicy",
+    "SendContext",
+    "BroadcastNewCellsSender",
+    "CompositeCommsPolicy",
+    "NoCommsPolicy",
+    "default_comms_policy",
 ]
