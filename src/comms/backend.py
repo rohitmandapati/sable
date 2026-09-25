@@ -8,16 +8,17 @@
 # the whole point of this seam.
 #
 # This module ships the first, trivial backend: PerfectBroadcastBackend --
-# immediate, lossless, unlimited delivery to every peer. It exists so the MAPPO
-# pipeline can run end-to-end before any realism is modeled. Because the protocol
-# already expresses "delivery MAY be partial or delayed" (deliver() can return
-# fewer messages than were submitted, with age >= 1), the degraded backends drop
-# in later behind this same interface with zero policy change.
+# lossless, unlimited delivery to every peer. It exists so the MAPPO pipeline can
+# run end-to-end before any realism is modeled. Because the protocol already
+# expresses "delivery MAY be partial or delayed" (deliver() can return fewer
+# messages than were submitted, with age >= 1), the degraded backends drop in
+# later behind this same interface with zero policy change.
 #
-# Timing convention: submit()/execute() only ENQUEUE; deliver(recipient, tick)
-# drains that recipient's inbox and stamps delivered_tick=tick. The environment
-# drains at the start of a tick, so a message submitted at tick t is delivered at
-# t+1 (age 1) under this backend.
+# Timing convention: NEXT-TICK delivery. execute()/broadcast()/send_to() only
+# ENQUEUE; deliver(recipient, tick) returns every queued message whose created
+# tick is strictly earlier than `tick` and stamps delivered_tick=tick. A message
+# submitted at tick t is therefore never delivered on tick t -- the earliest it
+# can arrive is t+1, so message age is always >= 1 (normally exactly 1).
 
 from __future__ import annotations
 
@@ -34,18 +35,24 @@ from robot import Position
 
 @dataclass
 class CommsStats:
-    # Payload-only accounting (metadata is not on the wire; see Message). Counts
-    # are cumulative for the episode and reset between episodes.
+    # Cumulative per-episode accounting (reset between episodes). `payload_*`
+    # counts belief cells only; `wire_*` counts the full frame including the
+    # header (see Message.wire_bytes), so the two together separate novel
+    # information from framing overhead.
     messages_transmitted: int = 0   # one per logical send, regardless of fan-out
     deliveries_made: int = 0        # one per (message, recipient) actually landed
     payload_bytes_transmitted: int = 0
     payload_bytes_delivered: int = 0
+    wire_bytes_transmitted: int = 0
+    wire_bytes_delivered: int = 0
 
     def reset(self) -> None:
         self.messages_transmitted = 0
         self.deliveries_made = 0
         self.payload_bytes_transmitted = 0
         self.payload_bytes_delivered = 0
+        self.wire_bytes_transmitted = 0
+        self.wire_bytes_delivered = 0
 
 
 @runtime_checkable
@@ -75,18 +82,20 @@ _Pending = tuple[Message, Position | None, PayloadKind]
 
 
 class PerfectBroadcastBackend:
-    """Immediate, lossless, unlimited-bandwidth delivery to every peer."""
+    """Lossless, unlimited-bandwidth, next-tick delivery to every peer."""
 
     def __init__(self, robot_ids: Iterable[str]) -> None:
         self._ids: list[str] = list(robot_ids)
         self._inboxes: dict[str, list[_Pending]] = defaultdict(list)
-        self._next_id = 0
+        # Per-sender message counter, so message ids are sender-scoped sequence
+        # numbers (monotonic within a sender; two senders may share a value).
+        self._seq: dict[str, int] = defaultdict(int)
         self.stats = CommsStats()
 
     def reset(self, seed: int | None = None) -> None:
         # seed is accepted for protocol symmetry; a lossless backend has no RNG.
         self._inboxes = defaultdict(list)
-        self._next_id = 0
+        self._seq = defaultdict(int)
         self.stats.reset()
 
     # -- endpoints -----------------------------------------------------------
@@ -135,15 +144,21 @@ class PerfectBroadcastBackend:
         )
 
     def deliver(self, recipient_id: str, tick: int) -> list[DeliveredMessage]:
-        # Drain this recipient's inbox. Each pending item was already
-        # reconstructed from its wire frame at submit time, so the receiver reads
-        # sender/id/tick/cells off the wire -- never the sender's live object.
+        # Next-tick delivery: return only messages created strictly before `tick`
+        # and hold the rest (i.e. anything sent this same tick) for later. Each
+        # pending item was already reconstructed from its wire frame at submit
+        # time, so the receiver reads sender/id/tick/cells off the wire -- never
+        # the sender's live object.
         pending = self._inboxes.get(recipient_id, [])
-        self._inboxes[recipient_id] = []
+        ready = [item for item in pending if item[0].created_tick < tick]
+        self._inboxes[recipient_id] = [
+            item for item in pending if item[0].created_tick >= tick
+        ]
         out: list[DeliveredMessage] = []
-        for received, sender_position, kind in pending:
+        for received, sender_position, kind in ready:
             self.stats.deliveries_made += 1
             self.stats.payload_bytes_delivered += received.payload_size_bytes
+            self.stats.wire_bytes_delivered += received.wire_size_bytes
             out.append(
                 DeliveredMessage(
                     sender_id=received.sender_id,
@@ -179,15 +194,17 @@ class PerfectBroadcastBackend:
         # full frame so recipients receive exactly what survived the wire --
         # provenance included -- the honest path, even though this backend never
         # corrupts it.
+        seq = self._seq[sender_id]
+        self._seq[sender_id] = seq + 1
         message = Message.from_belief_delta(
             sender_id=sender_id,
             cells=action.cells,
             tick=tick,
-            message_id=self._next_id,
+            message_id=seq,
         )
-        self._next_id += 1
         self.stats.messages_transmitted += 1
         self.stats.payload_bytes_transmitted += message.payload_size_bytes
+        self.stats.wire_bytes_transmitted += message.wire_size_bytes
 
         received = Message.deserialize(message.wire_bytes)
         for rid in recipients:

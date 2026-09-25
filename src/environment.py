@@ -9,6 +9,7 @@ import numpy as np
 from actions import Action
 from comms import (
     Cell,
+    CommunicationAction,
     PerfectBroadcastBackend,
     ReceiveInbox,
     TrustAllReceiver,
@@ -424,20 +425,23 @@ class Environment(ParallelEnv):
         return revealed
 
     def _exchange_comms(self, sensed_cells: dict[str, list[Cell]]) -> None:
-        # Broadcast each robot's newly-sensed cells over the comms backend, then
-        # deliver + fuse. The receive/trust policy decides what to do with each
-        # message; fusion updates belief_map (+ trust_map) ONLY and never touches
-        # sensed_mask, so first-hand sensing is never overwritten and the
-        # redundancy metric stays physical. Delivery is same-tick here, so a
-        # received message carries age 0.
+        # The baseline SEND policy: every robot broadcasts its newly-sensed cells
+        # as one CommunicationAction, routed through the backend's execute() -- the
+        # exact entry point the learned send head will use. Then deliver + fuse.
+        # The receive/trust policy decides what to do with each message; fusion
+        # updates belief_map (+ trust_map) ONLY and never touches sensed_mask, so
+        # first-hand sensing is never overwritten and the redundancy metric stays
+        # physical. Delivery is next-tick, so a received message carries age >= 1
+        # (this tick's broadcasts are delivered on the following tick).
         assert self.comms is not None
         alive = self.active_robot_ids()
         for rid in alive:
             cells = tuple(sensed_cells.get(rid, ()))
             if cells:
-                self.comms.broadcast(
-                    rid,
-                    cells,
+                action = CommunicationAction.broadcast(cells)
+                self.comms.execute(
+                    action,
+                    sender_id=rid,
                     tick=self.tick_count,
                     sender_position=self.robots[rid].pos,
                 )

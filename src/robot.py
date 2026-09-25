@@ -72,16 +72,22 @@ class Robot:
     def fuse_cell(self, position: Position, value: int, trust: float) -> None:
         # Integrate a comms-received cell chosen by the receive/trust policy.
         # Belief is filled only where still UNKNOWN, so first-hand sensing is
-        # never overwritten; trust_map records the confidence behind the cell and
-        # accumulates by max (the strongest evidence for a cell wins). NEVER
-        # touches sensed_mask -- that stays a true record of first-hand sensing.
+        # never overwritten. Trust is stamped ONLY when the message supports the
+        # value actually stored in belief_map -- i.e. the cell was UNKNOWN (and we
+        # just adopted the message's value) or the message agrees with what is
+        # already believed. A message that CONFLICTS with a known belief changes
+        # nothing: belief stays, and no trust is recorded (conflict handling comes
+        # later). trust_map accumulates by max; NEVER touches sensed_mask.
         if not self.alive:
             raise RuntimeError("Inactive robot cannot receive messages")
         row, col = position
         if not (0 <= row < self.map_shape[0]) or not (0 <= col < self.map_shape[1]):
             return  # out of bounds, ignore
-        if self.belief_map[row][col] == UNKNOWN:
+        current = self.belief_map[row][col]
+        if current == UNKNOWN:
             self.belief_map[row][col] = value
+        elif current != value:
+            return  # conflict with known belief: keep belief, do not stamp trust
         if trust > self.trust_map[row][col]:
             self.trust_map[row][col] = trust
     

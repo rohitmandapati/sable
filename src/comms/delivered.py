@@ -27,7 +27,7 @@ class DeliveredMessage:
     cells: tuple[Cell, ...]      # decoded belief patch
     created_tick: int            # tick the sender emitted it
     delivered_tick: int          # tick it reached this inbox
-    sequence_id: int             # sender-scoped message id (duplicate detection)
+    sequence_id: int             # sender-scoped sequence number (duplicate detection)
     payload_size_bytes: int      # payload-only size, for comms-cost accounting
     # Claimed sender position -- metadata, NOT verified. A spoofing backend can
     # later lie here; the trust head must treat it as a claim, not ground truth.
@@ -35,7 +35,7 @@ class DeliveredMessage:
 
     @property
     def age(self) -> int:
-        # Ticks the message spent in flight. 0 only if delivered the same tick it
-        # was created; the env drains inboxes at tick start, so live traffic is
-        # age >= 1 (a message sent at t is consumable at t+1).
+        # Ticks the message spent in flight. Backends deliver next-tick (a message
+        # sent at t is never delivered before t+1), so age is always >= 1 --
+        # normally exactly 1.
         return self.delivered_tick - self.created_tick
