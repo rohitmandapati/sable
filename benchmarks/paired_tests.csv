@@ -1,0 +1,7 @@
+comparison,robots,maps,rate_with_comms,rate_without_comms,only_with_comms_completed,only_without_comms_completed,mcnemar_p
+coordinated_comms vs coordinated,2,200,0.845,0.78,31,18,0.0854
+coordinated_comms vs coordinated,4,200,0.905,0.975,4,18,0.00434
+coordinated_comms vs coordinated,8,200,0.815,0.995,1,37,2.84e-10
+independent_comms vs independent,2,200,0.535,0.225,76,14,1.78e-11
+independent_comms vs independent,4,200,0.295,0.13,49,16,5.08e-05
+independent_comms vs independent,8,200,0.23,0.0,46,0,2.84e-14
